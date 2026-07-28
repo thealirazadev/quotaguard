@@ -20,6 +20,16 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def to_iso_utc(value: datetime) -> str:
+    """Render a stored timestamp as ISO-8601 UTC with a Z suffix.
+
+    SQLite returns naive datetimes for DateTime(timezone=True) columns, so a
+    missing tzinfo is treated as UTC rather than as local time.
+    """
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 class Base(DeclarativeBase):
     """Common surrogate key and audit columns for every table."""
 
