@@ -23,6 +23,10 @@ work; log every non-obvious decision with its reason. Keep entries short and dat
   invalidation wired into every plan and key mutation, `POST /v1/check` with resource and cost
   validation and in-band unknown/revoked answers, draft-07 header rendering, and 73 new tests
   (143 total). Seven commits as listed in `docs/phases.md`.
+- 2026-07-29 - Phase 2 defect review: two key cache fixes (an invalidation lost to an in-flight
+  lookup, and an unbounded cache) plus one missing test on the check route's service token, and
+  two findings flagged for the owner because fixing them means changing
+  `docs/architecture.md`. Three commits; 146 tests. See "Phase 2 defect review" below.
 
 ## Project status
 
@@ -110,6 +114,78 @@ its own SQLite file and Redis database index):
   script reads its own TIME after the test seeds the bucket. The bound is the mirror at the
   seeded elapsed time and the mirror 250 ms later; an implementation that credited more than the
   elapsed time would still fail it.
+
+## Phase 2 defect review, 2026-07-29
+
+A second pass over the Phase 2 diff (`6c24c74..2d80f58`) read against `docs/architecture.md`,
+hunting concurrency, retry, and partial-failure faults first. Three commits came out of it; two
+further findings are recorded for the owner instead of changed.
+
+### Fixed
+
+- `fix(keycache): drop a lookup that raced an invalidation`. `resolve()` wrote its lookup result
+  into the cache unconditionally. An admin mutation landing while the threadpool lookup was in
+  flight cleared the cache and was then overwritten by the pre-mutation snapshot, so a revoked
+  key kept resolving as live for a whole `KEY_CACHE_TTL_SECONDS`. That contradicts
+  `docs/architecture.md` ("the in-process cache is invalidated immediately by the admin
+  mutation") and the Phase 2 checklist line "revoke a key: checks flip to `revoked_key`
+  immediately". A store now carries the invalidation generation it was read under and is dropped
+  if that generation moved. The counter is only ever compared for equality and never decreases,
+  so a lost increment from two threads racing cannot resurrect a stale write.
+  `tests/test_keycache.py::test_a_revoke_during_a_lookup_is_not_masked_by_the_cache` revokes from
+  inside a patched `_load` and fails on the old code.
+- `fix(keycache): bound the cache against unknown key floods`. The cache had no size bound.
+  `POST /v1/check` hashes whatever secret it is handed and caches the miss, so an unauthenticated
+  caller sending distinct random secrets added one entry each, retained until an admin mutation
+  happened to clear the cache: unbounded process memory driven by an open route. Measured at
+  20,000 entries for 20,000 bogus secrets. The cache is now dropped whole past
+  `MAX_CACHE_ENTRIES` (10,000), the same thing invalidation already does, so the worst case is
+  one SQLite lookup per active key afterwards rather than growth without end.
+- `test(check): assert the check route enforces the service token`. `require_service_token` was
+  only exercised as a bare function, so deleting it from the check router would not have failed a
+  single test. The new test overrides `get_settings` with a configured token and drives the real
+  route; verified by removing the router dependency (test fails) and restoring it (test passes).
+
+### Flagged for the owner, not changed
+
+Both would mean editing `docs/architecture.md`, which is source of truth.
+
+- A `cost` larger than the effective `burst_capacity` can never be admitted, but the script still
+  reports `retry_after = ceil((cost * 1e6 - tokens) / rate_utok)` exactly as the architecture
+  specifies. Measured with capacity 3 and cost 10: `Retry-After: 7`, and after sleeping 7 seconds
+  the answer is the same deny with the same `Retry-After`, so a client honouring the header
+  retries forever. An honest answer needs a rule for the impossible-cost case (deny with
+  `retry_after` null, or reject the cost at validation time against the key's capacity).
+- The failure table says every Redis failure on a check consumes nothing. That holds for a
+  connect failure or a `NOSCRIPT`, but not for a socket timeout: `REDIS_TIMEOUT_MS` can expire
+  after the script has already run and consumed, and the reply is simply lost. The Phase 4
+  fail-open path would then allow a request that was also charged, and fail-closed would deny one
+  that was charged. Worth stating in the table before Phase 4 implements the policies. Confirmed
+  separately that redis-py 5.2.1 does not retry commands (`retry_on_error` empty, `Retry` with 0
+  retries) and disconnects on timeout and on cancellation, so there is no silent double-consume
+  from a client-side retry or a client disconnect.
+
+### Checked and found sound
+
+- `app/lua/check.lua` against the step-by-step spec: clock, civil-calendar month and month end,
+  refill clamps and the `ts` advance, the exclusive window trim, the quota read, deny ordering,
+  the all-or-nothing consume, every TTL, the soft `SETNX`, and all fifteen tuple elements. The
+  one arithmetic gap found is cosmetic: `add * 1e6` in the `ts` advance can exceed 2^53 for
+  capacities above about 576,000 tokens, but the absolute error after dividing by `rate_utok`
+  stays under 1e-4 microseconds, far below the one-microtoken bound the design claims.
+- Rate behaviour over real time, measured rather than reasoned about: capacity 1 at 1/s admitted
+  3 in 3.0 seconds; capacity 5 at 100/s admitted 100 in 1.0 second; sustained 5 per 1 second
+  admitted 15 in 3.0 seconds. Every result is at or under the theoretical maximum.
+- Redis key names cannot be made to collide across keys, resources, or layers: `key_id` is a
+  fixed-format `k_` plus 12 hex and the layer letter comes before it, so the validated resource
+  charset (which does include `:`) cannot reach another key's namespace or the rollup lock.
+- Error paths: no bare external call. The lifespan preload, the pool close, the SQLite lookup,
+  the `NOSCRIPT` reload, and the tuple decode all handle and log their failure. No api key
+  secret, admin token, or service token reaches a log line or an error body; validation messages
+  carry the field name and the pydantic message only, never the submitted value.
+
+Suite after the three commits: `ruff check`, `black --check`, and `pytest` (146 passed) all green
+against the local Redis 7.2.4, run after each commit.
 
 ## Decisions log
 
