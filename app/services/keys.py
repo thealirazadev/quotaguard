@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models import ApiKey, utcnow
 from app.schemas.keys import KeyUpdateRequest
+from app.services import keycache
 from app.services import plans as plans_service
 
 logger = logging.getLogger("quotaguard.keys")
@@ -49,6 +50,7 @@ def issue_key(db: Session, plan_slug: str, name: str) -> tuple[ApiKey, str]:
     db.add(key)
     db.commit()
     db.refresh(key)
+    keycache.invalidate()
     logger.info("key issued", extra={"event": "key.issued", "key_id": key.key_id})
     return key, secret
 
@@ -81,6 +83,7 @@ def update_key(db: Session, key_id: str, data: KeyUpdateRequest) -> ApiKey:
         setattr(key, field, value)
     db.commit()
     db.refresh(key)
+    keycache.invalidate()
     logger.info("key overridden", extra={"event": "key.overridden", "key_id": key.key_id})
     return key
 
@@ -93,5 +96,6 @@ def revoke_key(db: Session, key_id: str) -> ApiKey:
     key.revoked_at = utcnow()
     db.commit()
     db.refresh(key)
+    keycache.invalidate()
     logger.info("key revoked", extra={"event": "key.revoked", "key_id": key.key_id})
     return key

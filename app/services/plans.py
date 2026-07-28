@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models import ApiKey, Plan
 from app.schemas.plans import PlanCreateRequest, PlanUpdateRequest
+from app.services import keycache
 
 logger = logging.getLogger("quotaguard.plans")
 
@@ -61,5 +62,7 @@ def update_plan(db: Session, slug: str, data: PlanUpdateRequest) -> Plan:
         setattr(plan, field, value)
     db.commit()
     db.refresh(plan)
+    # Cached keys carry the plan's limits and policy, so a plan change invalidates them.
+    keycache.invalidate()
     logger.info("plan updated", extra={"event": "plan.updated", "policy": plan.redis_down_policy})
     return plan
