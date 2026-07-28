@@ -1,4 +1,4 @@
-"""Api key issue and lookup.
+"""Api key issue, lookup, override, and revoke.
 
 The plaintext secret is generated here, returned once, and never stored: only
 its sha256 hash (the check-path lookup index) and a display prefix persist.
@@ -11,8 +11,9 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFoundError
-from app.models import ApiKey
+from app.errors import ConflictError, NotFoundError, ValidationError
+from app.models import ApiKey, utcnow
+from app.schemas.keys import KeyUpdateRequest
 from app.services import plans as plans_service
 
 logger = logging.getLogger("quotaguard.keys")
@@ -64,4 +65,33 @@ def get_key(db: Session, key_id: str) -> ApiKey:
     key = db.scalar(select(ApiKey).where(ApiKey.key_id == key_id))
     if key is None:
         raise NotFoundError(f"No key with id '{key_id}' exists.")
+    return key
+
+
+def update_key(db: Session, key_id: str, data: KeyUpdateRequest) -> ApiKey:
+    key = get_key(db, key_id)
+    if key.revoked_at is not None:
+        raise ConflictError(f"Key '{key_id}' is revoked and can no longer be changed.")
+    changes = data.model_dump(exclude_unset=True)
+    if not changes:
+        raise ValidationError("Provide at least one field to set or clear.")
+    if "name" in changes and changes["name"] is None:
+        raise ValidationError("name cannot be set to null.")
+    for field, value in changes.items():
+        setattr(key, field, value)
+    db.commit()
+    db.refresh(key)
+    logger.info("key overridden", extra={"event": "key.overridden", "key_id": key.key_id})
+    return key
+
+
+def revoke_key(db: Session, key_id: str) -> ApiKey:
+    """Revocation is permanent; a revoked key is never deleted or reinstated."""
+    key = get_key(db, key_id)
+    if key.revoked_at is not None:
+        raise ConflictError(f"Key '{key_id}' is already revoked.")
+    key.revoked_at = utcnow()
+    db.commit()
+    db.refresh(key)
+    logger.info("key revoked", extra={"event": "key.revoked", "key_id": key.key_id})
     return key

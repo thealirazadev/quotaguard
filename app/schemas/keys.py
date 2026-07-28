@@ -5,6 +5,13 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.models import to_iso_utc
+from app.schemas.plans import (
+    BurstCapacity,
+    BurstRefillPerSec,
+    MonthlyQuota,
+    SustainedLimit,
+    SustainedWindowSeconds,
+)
 
 
 class KeyIssueRequest(BaseModel):
@@ -12,6 +19,19 @@ class KeyIssueRequest(BaseModel):
 
     plan: str
     name: str = Field(min_length=1, max_length=128)
+
+
+class KeyUpdateRequest(BaseModel):
+    """Rename and set or clear overrides; an explicit null clears one override."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    override_burst_capacity: BurstCapacity | None = None
+    override_burst_refill_per_sec: BurstRefillPerSec | None = None
+    override_sustained_limit: SustainedLimit | None = None
+    override_sustained_window_seconds: SustainedWindowSeconds | None = None
+    override_monthly_quota: MonthlyQuota | None = None
 
 
 class KeyIssuedOut(BaseModel):
@@ -48,3 +68,12 @@ class KeyDetailOut(KeyOut):
 class KeyListOut(BaseModel):
     keys: list[KeyOut]
     total: int
+
+
+class KeyRevokedOut(BaseModel):
+    key_id: str
+    revoked_at: datetime
+
+    @field_serializer("revoked_at")
+    def _serialize_revoked_at(self, value: datetime) -> str:
+        return to_iso_utc(value)

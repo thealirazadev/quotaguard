@@ -4,7 +4,15 @@ from fastapi import APIRouter, Depends, status
 
 from app.deps import DbDep, require_admin
 from app.models import ApiKey
-from app.schemas.keys import KeyDetailOut, KeyIssuedOut, KeyIssueRequest, KeyListOut, KeyOut
+from app.schemas.keys import (
+    KeyDetailOut,
+    KeyIssuedOut,
+    KeyIssueRequest,
+    KeyListOut,
+    KeyOut,
+    KeyRevokedOut,
+    KeyUpdateRequest,
+)
 from app.schemas.plans import (
     PlanCreateRequest,
     PlanDetailOut,
@@ -86,3 +94,16 @@ def get_key(key_id: str, db: DbDep) -> dict:
     key = keys_service.get_key(db, key_id)
     detail = KeyDetailOut(**_key_out(key).model_dump(), effective_limits=key.effective_limits())
     return {"data": detail}
+
+
+@router.patch("/keys/{key_id}")
+def update_key(key_id: str, payload: KeyUpdateRequest, db: DbDep) -> dict:
+    key = keys_service.update_key(db, key_id, payload)
+    detail = KeyDetailOut(**_key_out(key).model_dump(), effective_limits=key.effective_limits())
+    return {"data": detail}
+
+
+@router.post("/keys/{key_id}/revoke")
+def revoke_key(key_id: str, db: DbDep) -> dict:
+    key = keys_service.revoke_key(db, key_id)
+    return {"data": KeyRevokedOut(key_id=key.key_id, revoked_at=key.revoked_at)}
