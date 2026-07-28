@@ -18,8 +18,9 @@ assumed.
 
 ## Features
 
-Plan and key management (the admin API and CLI below) is implemented. The check endpoint, the
-quota lifecycle, and the Redis-down policies follow in later phases of `docs/phases.md`.
+Plan and key management and the atomic check endpoint are implemented. The quota lifecycle
+(webhooks, rollups, usage) and the Redis-down policies follow in later phases of
+`docs/phases.md`.
 
 - `POST /v1/check`: allow/deny plus limit, remaining, and reset per
   draft-ietf-httpapi-ratelimit-headers-07, in one `EVALSHA` round trip.
@@ -63,6 +64,53 @@ Run a local Redis with Docker if you do not have one:
 ```bash
 docker run --rm -d -p 6379:6379 redis:7.4-alpine redis-server --maxmemory-policy noeviction
 ```
+
+## Checking a request
+
+Call `POST /v1/check` once per protected request. `resource` scopes the two short-window layers
+(1-128 characters of `[a-zA-Z0-9_.:/-]`); `cost` defaults to 1, maxes at 1000, and is charged to
+the bucket and the monthly quota while the sliding window always counts one request. Set
+`QG_SERVICE_TOKEN` to require an `X-Service-Token` header on this route.
+
+```bash
+curl -X POST localhost:8000/v1/check -H 'Content-Type: application/json' \
+  -d '{"api_key":"qk_...","resource":"search","cost":1}'
+```
+
+```json
+{
+  "data": {
+    "allowed": true,
+    "reason": null,
+    "degraded": false,
+    "limit": 100, "remaining": 97, "reset": 2, "retry_after": null,
+    "headers": {
+      "RateLimit": "limit=100, remaining=97, reset=2",
+      "RateLimit-Policy": "100;w=2, 5000;w=3600, 500000;w=2678400"
+    },
+    "layers": {
+      "burst": { "limit": 100, "remaining": 97, "reset": 2 },
+      "sustained": { "limit": 5000, "remaining": 4993, "reset": 3599 },
+      "quota": { "month": "2026-07", "limit": 500000, "used": 12401,
+                 "remaining": 487599, "reset": 397440, "soft_threshold_crossed": false }
+    }
+  }
+}
+```
+
+The endpoint always answers `200` with a decision, including for an unknown or revoked key
+(`reason` is `unknown_key` or `revoked_key`, `layers` is `null`, and Redis is never touched). A
+gateway forwards the request when `allowed` is true and otherwise rejects it: `429` for `burst`,
+`sustained`, or `quota`, `401`/`403` for the key reasons. Copy `data.headers` onto the response
+verbatim; `Retry-After` is present only on a deny. Malformed bodies, an out-of-charset resource,
+and a cost outside 1-1000 return `422` with the standard error envelope.
+
+Every decision is one `EVALSHA` of `app/lua/check.lua`. The script reads Redis `TIME` once, uses
+it for the refill, the window scores, the UTC month, and every reset value, and evaluates all
+three layers before writing anything: if any layer denies, nothing is consumed anywhere. Token
+state is kept in integer microtokens (1 token = 1,000,000) so refill never drifts, and every
+rounding under-credits. Fifty concurrent checks against a remaining budget of ten admit exactly
+ten (`tests/test_concurrency.py`).
 
 ## Managing plans and keys
 
@@ -139,7 +187,9 @@ would test the mock. CI runs lint and the full suite against a Redis 7 service c
 
 ## Status
 
-Phase 1 complete: the project skeleton, structured logging, the error envelope, the plans and
-api_keys schema, admin authentication, the plan and key admin API, and the CLI. Phase 2 adds the
-atomic check script and `POST /v1/check`. Implementation follows `docs/phases.md` one phase at a
-time.
+Phases 1 and 2 complete: the project skeleton, structured logging, the error envelope, the plans
+and api_keys schema, admin authentication, the plan and key admin API, the CLI, and the atomic
+check path (`app/lua/check.lua`, the script registry, the key cache, `POST /v1/check`, and the
+draft RateLimit headers). Phase 3 adds the quota lifecycle (soft-threshold webhooks, rollups,
+usage reports) and Phase 4 the Redis-down policies. Implementation follows `docs/phases.md` one
+phase at a time.
