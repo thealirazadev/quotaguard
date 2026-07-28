@@ -17,6 +17,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH}"
 os.environ["QG_ADMIN_TOKEN"] = ADMIN_TOKEN
 os.environ.pop("QG_SERVICE_TOKEN", None)
 os.environ["LOG_LEVEL"] = "WARNING"
+# The production default of 100 ms is a latency budget, not a correctness bound; the
+# concurrency tests fire 50 commands at once and must not flake on a loaded runner.
+os.environ["REDIS_TIMEOUT_MS"] = "5000"
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
@@ -28,8 +31,10 @@ from app.config import get_settings  # noqa: E402
 
 get_settings.cache_clear()
 
+from app import redis_client as app_redis  # noqa: E402
 from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services import keycache  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ADMIN_HEADERS = {"X-Admin-Token": ADMIN_TOKEN}
@@ -68,6 +73,7 @@ def _clean_tables(_migrated_database):
         session.commit()
     finally:
         session.close()
+    keycache.invalidate()
 
 
 @pytest.fixture
@@ -93,6 +99,62 @@ async def redis_client():
     yield connection
     await connection.flushdb()
     await connection.aclose()
+
+
+@pytest.fixture
+async def script():
+    """The application's own script registry and pool, against a flushed database.
+
+    The pool is rebuilt per test because it binds to the running event loop, and
+    every test using the check path takes this fixture so the teardown closes it.
+    """
+    client = app_redis.get_client()
+    await client.flushdb()
+    registry = app_redis.get_registry()
+    await registry.load_all()
+    yield registry
+    await client.flushdb()
+    await app_redis.close()
+
+
+@pytest.fixture
+def resolved():
+    """Build a ResolvedKey directly, for tests that drive the script without HTTP."""
+    from app.services.keycache import ResolvedKey
+
+    defaults = {
+        "key_id": "k_testkey0001",
+        "name": "test key",
+        "plan_slug": "pro",
+        "revoked": False,
+        "burst_capacity": 5,
+        "burst_refill_per_sec": 1,
+        "sustained_limit": 100,
+        "sustained_window_seconds": 60,
+        "monthly_quota": 1000,
+        "quota_soft_pct": 0,
+        "redis_down_policy": "fail_open",
+    }
+
+    def _resolved(**overrides):
+        return ResolvedKey(**{**defaults, **overrides})
+
+    return _resolved
+
+
+@pytest.fixture
+def do_check(client):
+    """Post one valid check and return the decision body."""
+
+    async def _do_check(api_key: str, resource: str = "search", cost: int | None = None):
+        payload: dict[str, object] = {"api_key": api_key, "resource": resource}
+        if cost is not None:
+            payload["cost"] = cost
+        response = await client.post("/v1/check", json=payload)
+        assert response.status_code == 200, response.text
+        return response.json()["data"]
+
+    return _do_check
 
 
 @pytest.fixture
