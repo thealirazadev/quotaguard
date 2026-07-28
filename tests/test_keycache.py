@@ -83,6 +83,22 @@ async def test_unknown_keys_are_cached_too(client, counted_loads):
     assert len(counted_loads) == 1
 
 
+async def test_the_cache_is_bounded_against_a_flood_of_unknown_keys(client, monkeypatch):
+    """POST /v1/check takes unvalidated secrets, so cached misses are attacker-sized.
+
+    Without a bound, one entry per distinct secret is retained until an admin
+    mutation happens to clear the cache, which is unbounded process memory
+    driven by an unauthenticated route.
+    """
+    monkeypatch.setattr(keycache, "_load", lambda digest: None)
+
+    flood = 20_000
+    for index in range(flood):
+        assert await keycache.resolve(f"qk_bogus{index}") is None
+
+    assert len(keycache._cache) < flood, "cached misses grew once per distinct secret"
+
+
 async def test_revoking_a_key_invalidates_the_cache(client, make_plan, make_key, counted_loads):
     await make_plan()
     issued = await make_key()

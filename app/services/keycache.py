@@ -23,6 +23,11 @@ from app.services import keys as keys_service
 
 logger = logging.getLogger("quotaguard.keycache")
 
+# The check route hashes whatever secret it is handed, so the miss entries below are
+# sized by the caller. Past this many entries the cache is dropped whole, the same
+# thing an admin mutation does: at most one SQLite lookup per active key afterwards.
+MAX_CACHE_ENTRIES = 10_000
+
 
 @dataclass(frozen=True)
 class ResolvedKey:
@@ -97,5 +102,8 @@ async def resolve(api_key: str) -> ResolvedKey | None:
         # Misses are cached too, so a flood of bogus keys cannot turn into a
         # SQLite query per request; a real secret is random enough never to
         # collide with a cached miss.
+        if len(_cache) >= MAX_CACHE_ENTRIES:
+            logger.warning("key cache reached %s entries, dropped", MAX_CACHE_ENTRIES)
+            _cache.clear()
         _cache[digest] = (now + ttl, resolved)
     return resolved
