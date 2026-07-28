@@ -71,7 +71,13 @@ def _validation_message(exc: RequestValidationError) -> str:
     if not errors:
         return "The request body is invalid."
     first = errors[0]
-    location = [str(part) for part in first.get("loc", ()) if part not in ("body", "query", "path")]
+    # Keep named parts only: a malformed body reports a character offset, which
+    # would otherwise render as a field called "1".
+    location = [
+        part
+        for part in first.get("loc", ())
+        if isinstance(part, str) and part not in ("body", "query", "path")
+    ]
     field = ".".join(location)
     detail = str(first.get("msg", "is invalid")).rstrip(".")
     if not field:

@@ -82,6 +82,8 @@ async def test_malformed_json_uses_the_error_envelope(client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+    # A body offset must not surface as a field name.
+    assert not response.json()["error"]["message"].startswith("1:")
 
 
 async def test_responses_echo_a_request_id(client):
