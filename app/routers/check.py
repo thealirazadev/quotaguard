@@ -68,4 +68,4 @@ async def check(payload: CheckRequest) -> dict:
             "check allowed",
             extra={"key_id": key.key_id, "resource": payload.resource},
         )
-    return {"data": checker.to_out(result)}
+    return {"data": checker.to_out(key, result)}
