@@ -15,14 +15,28 @@ work; log every non-obvious decision with its reason. Keep entries short and dat
   detail, update, issue, override, revoke), the CLI, the CI workflow with a Redis 7 service
   container, 70 tests, and the README setup and admin sections. Fifteen commits as listed in
   `docs/phases.md`, plus one `fix(errors)` commit for a defect found during verification.
+- 2026-07-29 - Phase 2 complete: `app/redis_client.py` (pool with explicit timeouts, script
+  registry with one NOSCRIPT reload-and-retry, preloaded by a lifespan hook),
+  `app/lua/check.lua` implemented exactly per `docs/architecture.md` (Redis TIME as the only
+  clock, in-script civil-calendar month, integer microtoken refill, window trim, quota plus soft
+  SETNX, all-or-nothing consume, the 15-element tuple), `app/services/keycache.py` with
+  invalidation wired into every plan and key mutation, `POST /v1/check` with resource and cost
+  validation and in-band unknown/revoked answers, draft-07 header rendering, and 73 new tests
+  (143 total). Seven commits as listed in `docs/phases.md`.
 
 ## Project status
 
-- Phase 1 done and verified locally; awaiting owner approval before Phase 2. Phase 2 is the
-  atomic check path: `app/redis_client.py`, `app/lua/check.lua` exactly per the spec in
-  `docs/architecture.md`, the key cache, `POST /v1/check`, and the concurrency tests. No Redis
-  code exists yet by design: nothing in Phase 1 reads or writes a `qg:*` key, and a test asserts
-  that (`test_admin_writes_touch_no_redis_keys`).
+- Phases 1 and 2 done and verified locally and in CI; awaiting owner approval before Phase 3.
+- Open, and deliberately so: `POST /v1/check` has no Redis-down policy yet. A Redis failure on
+  the check path currently surfaces as `500 internal_error` through the catch-all handler (the
+  standard envelope, full detail logged, no traceback in the response). Fail-open and
+  fail-closed per plan, the `degraded: true` body, and `check.redis_down` are Phase 4
+  (`feat(check): add fail open and fail closed redis policies`), so the phase-verification line
+  "Redis stopped -> degraded per policy" is not satisfied yet by design. Confirmed by pointing a
+  server at a closed port: 500 with the envelope, `redis.exceptions.ConnectionError` in the log.
+- Also Phase 3 and later, as planned: nothing consumes `soft_crossed` beyond logging
+  `quota.soft_crossed` and reporting it in the response (the outbox row is Phase 3), and
+  `GET /health` still reports only `{"status": "ok"}` (the `redis` field is Phase 4).
 
 ### Verified on 2026-07-28
 
@@ -40,10 +54,62 @@ work; log every non-obvious decision with its reason. Keep entries short and dat
 - Log review of the manual run: JSON lines only, request ids present, no secrets, no tokens, no
   tracebacks.
 
+### Verified on 2026-07-29
+
+Phase 2 checklist, run against the Redis 7.4 container and a real uvicorn process (one worker,
+its own SQLite file and Redis database index):
+
+- Capacity 5 at 1 token/s: five checks allowed with `remaining` 4 down to 0, the sixth denied
+  with `reason: "burst"` and `Retry-After: 1`; after 2.2 seconds two more allowed and the third
+  denied again. `remaining` never went below 0 anywhere.
+- Sustained 3 per 2 second window: the fourth check denied with `reason: "sustained"` and
+  `retry 2`, the fifth with `retry 1`; `ZCARD qg:s:{key_id}:search` read 1, 2, 3, 3, 3 through
+  the sequence and dropped back to 1 after the window slid, with a TTL of 61584 ms.
+- Monthly quota 10: ten allowed, the eleventh denied with `reason: "quota"` and
+  `retry_after == reset`; `qg:q:{key_id}:2026-07` held `10` with TTL 4163130 (month end plus the
+  45 day grace). `HGETALL` on the bucket, `ZCARD` on the window, and both month keys were
+  byte-identical before and after the denied check.
+- Concurrency: `pytest tests/test_concurrency.py` (six tests, each layer binding, plus the HTTP
+  path) and a manual `xargs -P 50` curl loop against a fresh quota-10 key: 10 allowed, 40
+  denied, counter 10, ZCARD 10. As a control that the test can actually fail, the same 50-way
+  harness was run against a naive check-then-consume implementation in the scratchpad: it
+  admitted all 50.
+- Headers: `RateLimit: limit=100, remaining=97, reset=1` and
+  `RateLimit-Policy: 100;w=2, 5000;w=3600, 500000;w=2678400` on the pro plan, the policy always
+  in burst, sustained, monthly order; on allow the most constrained layer is reflected (burst at
+  97/100 over sustained at 4999/5000); two resources on one key limited independently while the
+  monthly counter advanced for both.
+- Unknown key and revoked key: 200 with `allowed: false`, `reason` `unknown_key` /
+  `revoked_key`, `layers: null`, `headers: {}`, and `KEYS qg:*` empty afterwards. Revoking
+  flipped the answer on the very next request (in-process invalidation). Bad resource charset,
+  `cost` 0, `cost` 1001, a missing field, and malformed JSON all returned 422
+  `validation_error`.
+- `redis-cli monitor` during one check: exactly one client command, `EVALSHA <sha> 4 ...`;
+  everything else on the log is `[14 lua]`, the script's own calls inside that single round trip.
+  The stored `ts` and the ZSET score are plain integer strings, so no value reached Redis in
+  scientific notation.
+- `uv run ruff check .`, `uv run black --check .`, and `uv run pytest` (143 passed) green
+  locally, and CI green on every pushed Phase 2 commit (run 30392416743: lint clean, 143 passed
+  against the Redis 7.4 service container).
+- Fresh clone into a temporary directory: `cp .env.example .env`, `uv sync`,
+  `uv run alembic upgrade head`, `uv run pytest` (143 passed), and
+  `uv run uvicorn app.main:app --workers 1` started clean with no warnings; `GET /health`,
+  `GET /admin/plans`, and `GET /admin/keys` returned well-formed empty states.
+- Process restart: plans and keys survived, checks kept working against the live Redis state,
+  and after `SCRIPT FLUSH` the next check answered correctly with one
+  `lua script missing from the redis cache, reloading once` WARNING (the NOSCRIPT path).
+- Log review of the manual run: JSON lines only, request ids present, event keys limited to
+  `check.denied`, `check.unknown_key`, `quota.soft_crossed`, `key.issued`, `key.revoked`,
+  `plan.created`; zero occurrences of `qk_`, of the admin token, or of a traceback.
+
 ### Not verified
 
-- The GitHub Actions workflow has not run yet (it first executes on push). Its steps mirror the
-  commands verified locally, and the Redis service block is copied from `docs/testing.md`.
+- Redis-down behaviour on `/v1/check` is not implemented yet (see Project status); what was
+  observed is the 500 fallback, not the documented degraded response.
+- The refill cross-check against Redis asserts a range rather than an exact value, because the
+  script reads its own TIME after the test seeds the bucket. The bound is the mirror at the
+  seeded elapsed time and the mirror 250 ms later; an implementation that credited more than the
+  elapsed time would still fail it.
 
 ## Decisions log
 
@@ -94,6 +160,51 @@ work; log every non-obvious decision with its reason. Keep entries short and dat
 - 2026-07-28 - Local test Redis runs on port 6380 (`redis:7.4-alpine`, `maxmemory-policy
   noeviction`) because 6379 was already taken on the development machine. CI keeps 6379 and
   `TEST_REDIS_URL` overrides the default in both places.
+- 2026-07-29 - Every number the script hands to `redis.call` goes through
+  `string.format('%.0f', value)`. Lua numbers are doubles and the default conversion switches to
+  scientific notation well below microsecond epoch magnitudes, which would have written ZSET
+  scores, ZSET members, and the stored bucket state as `1.785e+15`. This is the single most
+  likely silent corruption in the script and it is now visible in `redis-cli monitor` output.
+- 2026-07-29 - The civil-calendar helpers in `check.lua` are wrapped in `-- <civil>` and
+  `-- </civil>` sentinel comments. `tests/test_civil_dates.py` extracts that block verbatim,
+  appends a small harness, and EVALs it on the real Redis for a few hundred epochs including
+  every month boundary from 2020 to 2039, both leap-day cases, and the 2100 non-leap century.
+  Redis TIME cannot be faked from a test, so without the extraction the only alternative was to
+  test a Python copy of the algorithm, which would prove nothing about the shipped Lua.
+- 2026-07-29 - The sustained `reset` is read after the consume, not before. For an allowed check
+  into an empty window the oldest member is the one just added, so `reset` is the full window
+  length instead of 0; reporting 0 would tell a caller the limit resets immediately when in fact
+  its own request occupies a slot for a whole window. Deny values are unaffected (a deny writes
+  no member).
+- 2026-07-29 - The key cache stores misses as well as hits. Without it, a flood of bogus keys
+  would be one SQLite query per request on the hot path. A real secret is 32 random bytes, so it
+  cannot collide with a cached miss, and the staleness bound is the same
+  `KEY_CACHE_TTL_SECONDS`.
+- 2026-07-29 - Invalidation clears the whole cache rather than one entry. The cache is keyed by
+  sha256 of the secret while admin mutations know only `key_id`, so targeted invalidation would
+  need a reverse index for an operation that happens a few times a day and costs at most one
+  SQLite lookup per active key afterwards.
+- 2026-07-29 - `keycache.py` imports `app.services.keys` as a module rather than importing
+  `hash_secret` directly. `keys.py` calls `keycache.invalidate()`, so the two modules import
+  each other; a module import defers the attribute lookup to call time and keeps one definition
+  of the secret hash.
+- 2026-07-29 - The check route is `async def`, so its cache-miss SQLite lookup runs through
+  Starlette's `run_in_threadpool`. Reading the database on the event loop would block every
+  other in-flight check, which is exactly what `docs/rules.md` forbids.
+- 2026-07-29 - Revoked keys log `check.denied` with `deny_layer: "revoked_key"` rather than a
+  new event key. `docs/rules.md` fixes the event key list and forbids inventing variants, and
+  `deny_layer` is already a documented context field.
+- 2026-07-29 - Tests set `REDIS_TIMEOUT_MS=5000` and rebuild the application's Redis pool per
+  test (the `script` fixture). The 100 ms production default is a latency budget, not a
+  correctness bound, and the 50-way concurrency tests would flake on a loaded runner; the pool
+  is rebuilt because `redis.asyncio` connections bind to the event loop that created them and
+  pytest-asyncio gives each test a fresh loop.
+- 2026-07-29 - `test_mirror_never_over_credits_and_stays_in_bounds` asserts strict conservatism
+  (credit never exceeds the exact rational amount) over a fixed seed, so the test is
+  deterministic. The one floating-point step in the refill, `(elapsed / 1e6) * rate_utok`, has
+  an absolute error under 5e-4 microtokens after the full-bucket clamp, so a knife-edge floor
+  crossing is theoretically possible but does not occur for the sampled space; 300,000 random
+  samples produced zero over-credits.
 - 2026-07-27 - Rollups upsert with `used = max(existing, read)` and Redis counters are restored
   after data loss via a delta-based `INCRBY` inside `restore.lua` (never SET), so overlapping
   rollups, replayed runs, and concurrent live traffic can never lower a persisted value or lose
