@@ -60,9 +60,12 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(level: str) -> None:
-    """Install the JSON handler on the root logger, replacing any previous handlers."""
-    handler = logging.StreamHandler(sys.stdout)
+def configure_logging(level: str, stream=None) -> None:
+    """Install the JSON handler on the root logger, replacing any previous handlers.
+
+    The CLI passes stderr so its own stdout stays a clean machine interface.
+    """
+    handler = logging.StreamHandler(stream or sys.stdout)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     for existing in list(root.handlers):
