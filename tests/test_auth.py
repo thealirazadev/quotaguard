@@ -5,6 +5,7 @@ import pytest
 from app.config import get_settings
 from app.deps import require_service_token
 from app.errors import UnauthorizedError
+from app.main import app
 from tests.conftest import ADMIN_HEADERS
 
 PROTECTED = [
@@ -57,6 +58,27 @@ async def test_service_token_is_enforced_once_configured():
         require_service_token(settings, None)
     with pytest.raises(UnauthorizedError):
         require_service_token(settings, "wrong")
+
+
+async def test_the_check_route_is_wired_to_the_service_token(client):
+    """The dependency is unit-tested above; this proves POST /v1/check carries it."""
+    configured = get_settings().model_copy(update={"qg_service_token": "service-token"})
+    app.dependency_overrides[get_settings] = lambda: configured
+    body = {"api_key": "qk_nosuchkey", "resource": "search"}
+    try:
+        refused = await client.post("/v1/check", json=body)
+        wrong = await client.post("/v1/check", json=body, headers={"X-Service-Token": "wrong"})
+        accepted = await client.post(
+            "/v1/check", json=body, headers={"X-Service-Token": "service-token"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+    assert refused.status_code == 401
+    assert refused.json()["error"]["code"] == "unauthorized"
+    assert wrong.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["reason"] == "unknown_key"
 
 
 async def test_tokens_never_appear_in_error_bodies(client):
