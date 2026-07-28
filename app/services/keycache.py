@@ -43,10 +43,16 @@ class ResolvedKey:
 
 # digest -> (expires_at monotonic, resolved key or None for a known-unknown key)
 _cache: dict[str, tuple[float, ResolvedKey | None]] = {}
+# Bumped by every invalidation. A lookup that was already in flight read the row
+# before the mutation committed, so it must not write that snapshot back into the
+# cleared cache: it would resurrect the pre-mutation key for a whole TTL.
+_generation = 0
 
 
 def invalidate() -> None:
     """Called by every plan and key mutation; the cache is small enough to drop whole."""
+    global _generation
+    _generation += 1
     _cache.clear()
 
 
@@ -84,9 +90,10 @@ async def resolve(api_key: str) -> ResolvedKey | None:
     now = monotonic()
     if entry is not None and entry[0] > now:
         return entry[1]
+    generation = _generation
     resolved = await run_in_threadpool(_load, digest)
     ttl = get_settings().key_cache_ttl_seconds
-    if ttl > 0:
+    if ttl > 0 and generation == _generation:
         # Misses are cached too, so a flood of bogus keys cannot turn into a
         # SQLite query per request; a real secret is random enough never to
         # collide with a cached miss.

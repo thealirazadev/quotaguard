@@ -2,7 +2,9 @@
 
 import pytest
 
+from app.db import SessionLocal
 from app.services import keycache
+from app.services import keys as keys_service
 
 
 @pytest.fixture(autouse=True)
@@ -93,6 +95,40 @@ async def test_revoking_a_key_invalidates_the_cache(client, make_plan, make_key,
     key = await keycache.resolve(issued["api_key"])
     assert key.revoked is True
     assert len(counted_loads) == 2, "the revoke dropped the cached entry"
+
+
+async def test_a_revoke_during_a_lookup_is_not_masked_by_the_cache(
+    client, make_plan, make_key, monkeypatch
+):
+    """An admin mutation that lands while a cache miss is in flight has to win.
+
+    The lookup read the row before the revoke committed, so writing its result
+    back after the invalidation would resurrect the pre-revoke key for a whole
+    TTL and keep admitting a revoked caller.
+    """
+    await make_plan()
+    issued = await make_key()
+    original = keycache._load
+    fired = []
+
+    def _load_then_revoke(digest):
+        resolved = original(digest)
+        if not fired:
+            fired.append(digest)
+            session = SessionLocal()
+            try:
+                keys_service.revoke_key(session, issued["key_id"])
+            finally:
+                session.close()
+        return resolved
+
+    monkeypatch.setattr(keycache, "_load", _load_then_revoke)
+
+    first = await keycache.resolve(issued["api_key"])
+    assert first.revoked is False, "the in-flight lookup predates the revoke"
+
+    second = await keycache.resolve(issued["api_key"])
+    assert second.revoked is True, "the revoke raced the lookup and was overwritten"
 
 
 async def test_updating_a_plan_invalidates_the_cache(client, make_plan, make_key):
