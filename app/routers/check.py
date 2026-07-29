@@ -7,10 +7,11 @@ gateway needs a decision on every call rather than an error branch.
 import logging
 
 from fastapi import APIRouter, Depends
+from starlette.concurrency import run_in_threadpool
 
 from app.deps import require_service_token
 from app.schemas.check import CheckOut, CheckRequest
-from app.services import checker, keycache
+from app.services import checker, keycache, webhooks
 
 logger = logging.getLogger("quotaguard.check")
 
@@ -53,6 +54,8 @@ async def check(payload: CheckRequest) -> dict:
                 "month": result.month,
             },
         )
+        # SQLite, so off the event loop; the outbox insert never blocks the decision.
+        await run_in_threadpool(webhooks.enqueue_soft_warning, key, result.month, result.quota_used)
     if not result.allowed:
         logger.info(
             "check denied",
