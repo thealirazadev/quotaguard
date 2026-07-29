@@ -2,10 +2,20 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 REDIS_DOWN_POLICIES = ("fail_open", "fail_closed")
+WEBHOOK_KINDS = ("quota_soft",)
 
 OVERRIDE_TO_PLAN_FIELD = {
     "override_burst_capacity": "burst_capacity",
@@ -102,3 +112,42 @@ class ApiKey(Base):
             for override_field in OVERRIDE_TO_PLAN_FIELD
             if getattr(self, override_field) is not None
         }
+
+
+class Rollup(Base):
+    """One persisted month counter per key. `used` is only ever raised."""
+
+    __tablename__ = "rollups"
+    __table_args__ = (UniqueConstraint("api_key_id", "month", name="uq_rollups_api_key_month"),)
+
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_keys.id", name="fk_rollups_api_key_id"), nullable=False, index=True
+    )
+    month: Mapped[str] = mapped_column(String(7), nullable=False)
+    used: Mapped[int] = mapped_column(Integer, nullable=False)
+    quota_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WebhookOutbox(Base):
+    """The webhook queue. The unique constraint is the at-most-once guarantee."""
+
+    __tablename__ = "webhook_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "api_key_id", "month", "kind", name="uq_webhook_outbox_api_key_month_kind"
+        ),
+        CheckConstraint("kind IN ('quota_soft')", name="ck_webhook_outbox_kind"),
+    )
+
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_keys.id", name="fk_webhook_outbox_api_key_id"), nullable=False, index=True
+    )
+    month: Mapped[str] = mapped_column(String(7), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
