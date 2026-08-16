@@ -1,5 +1,6 @@
-"""Monthly quota rollup: scan Redis counters, upsert to SQLite idempotently."""
+"""Monthly quota rollup: scan Redis counters, upsert to SQLite idempotently, restore after loss."""
 
+import calendar
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import ApiKey, Rollup, utcnow
-from app.redis_client import get_pool
+from app.redis_client import get_pool, get_registry
 
 logger = logging.getLogger("quotaguard.rollup")
 
@@ -84,6 +85,15 @@ def parse_quota_key(key: str) -> tuple[str, str] | None:
     return None
 
 
+def month_end_seconds(year: int, month: int) -> int:
+    """Epoch seconds of the first instant of the next month (month-end in UTC)."""
+    if month == 12:
+        next_month_date = datetime(year + 1, 1, 1, tzinfo=UTC)
+    else:
+        next_month_date = datetime(year, month + 1, 1, tzinfo=UTC)
+    return int(next_month_date.timestamp())
+
+
 def upsert_rollup(
     db: Session, api_key_id: int, month: str, used: int, quota_limit: int
 ) -> None:
@@ -103,6 +113,33 @@ def upsert_rollup(
     else:
         db.add(Rollup(api_key_id=api_key_id, month=month, used=used, quota_limit=quota_limit))
         db.commit()
+
+
+def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int:
+    """Restore a quota counter from its rollup value if it was lost.
+
+    Uses restore.lua for atomic restore: if the current value is below the rollup,
+    raise it to the rollup (delta-based INCRBY). Returns count of restored keys (0 or 1).
+    """
+    try:
+        year, month_num = int(month[:4]), int(month[5:7])
+        month_end = month_end_seconds(year, month_num)
+
+        redis_key = f"qg:q:{key_id}:{month}"
+        registry = get_registry()
+
+        if "restore" not in registry.scripts:
+            logger.warning("restore.lua not loaded in script registry")
+            return 0
+
+        result = registry.scripts["restore"](keys=[redis_key], args=[rollup_value, month_end])
+        if result != rollup_value:
+            # The current value was not below the rollup; no restore needed.
+            return 0
+        return 1
+    except Exception as exc:
+        logger.warning("restore failed for %s %s: %s", key_id, month, exc.__class__.__name__)
+        return 0
 
 
 def run() -> dict[str, int]:
@@ -145,6 +182,15 @@ def run() -> dict[str, int]:
 
             upsert_rollup(db, api_key.id, month, redis_value, quota_limit)
             stats["upserted"] += 1
+
+        # Phase 2: Restore from rollups (for counters that were lost).
+        rollups = db.query(Rollup).all()
+        for rollup in rollups:
+            api_key = db.scalar(select(ApiKey).where(ApiKey.id == rollup.api_key_id))
+            if api_key is None:
+                continue
+            restored = restore_from_rollup(pool, api_key.key_id, rollup.month, rollup.used)
+            stats["restored"] += restored
 
     except SQLAlchemyError as exc:
         db.rollback()
