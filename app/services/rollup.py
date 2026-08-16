@@ -11,14 +11,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import ApiKey, Rollup, utcnow
+from app.models import ApiKey, Rollup, WebhookOutbox, utcnow
 from app.redis_client import get_pool, get_registry
+from app.services import webhooks
 
 logger = logging.getLogger("quotaguard.rollup")
 
 LOCK_KEY = "qg:lock:rollup"
 LOCK_TIMEOUT_MS = 120_000  # 120 seconds
 QUOTA_PATTERN = "qg:q:*"
+FLAG_PATTERN = "qg:f:*"
 SCAN_COUNT = 100
 
 
@@ -77,10 +79,37 @@ def scan_quota_keys(pool) -> list[tuple[str, int]]:
     return results
 
 
+def scan_flag_keys(pool) -> list[str]:
+    """SCAN qg:f:* and return list of all soft threshold flag keys."""
+    results = []
+    cursor = 0
+
+    try:
+        while True:
+            cursor, keys = pool.execute_command("SCAN", cursor, "MATCH", FLAG_PATTERN, "COUNT", SCAN_COUNT)
+            for key in keys:
+                results.append(key.decode() if isinstance(key, bytes) else key)
+            if cursor == 0:
+                break
+    except RedisError as exc:
+        logger.exception("scan flags failed: %s", exc.__class__.__name__)
+        raise
+
+    return results
+
+
 def parse_quota_key(key: str) -> tuple[str, str] | None:
     """Parse qg:q:k_abc123:2026-07 -> (key_id, month). Returns None on parse failure."""
     parts = key.split(":")
     if len(parts) == 4 and parts[0] == "qg" and parts[1] == "q":
+        return (parts[2], parts[3])
+    return None
+
+
+def parse_flag_key(key: str) -> tuple[str, str] | None:
+    """Parse qg:f:k_abc123:2026-07 -> (key_id, month). Returns None on parse failure."""
+    parts = key.split(":")
+    if len(parts) == 4 and parts[0] == "qg" and parts[1] == "f":
         return (parts[2], parts[3])
     return None
 
@@ -142,6 +171,79 @@ def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int
         return 0
 
 
+def reconcile_soft_webhooks(db: Session, pool) -> int:
+    """Reconcile missed soft threshold webhooks.
+
+    Scan qg:f:* flags. For each flag that exists but has no corresponding outbox row,
+    read the quota counter and insert a missed webhook row. Returns count of rows inserted.
+    """
+    reconciled = 0
+    try:
+        flag_keys = scan_flag_keys(pool)
+        for flag_key in flag_keys:
+            parsed = parse_flag_key(flag_key)
+            if parsed is None:
+                continue
+
+            key_id, month = parsed
+            api_key = db.scalar(select(ApiKey).where(ApiKey.key_id == key_id))
+            if api_key is None:
+                continue
+
+            # Check if an outbox row already exists.
+            existing_outbox = db.scalar(
+                select(WebhookOutbox).where(
+                    and_(
+                        WebhookOutbox.api_key_id == api_key.id,
+                        WebhookOutbox.month == month,
+                        WebhookOutbox.kind == "quota_soft",
+                    )
+                )
+            )
+
+            if existing_outbox:
+                # Row already exists; no need to reconcile.
+                continue
+
+            # Read the current quota counter from Redis.
+            quota_key = f"qg:q:{key_id}:{month}"
+            try:
+                quota_value_str = pool.execute_command("GET", quota_key)
+                used = int(quota_value_str) if quota_value_str else 0
+            except Exception as exc:
+                logger.warning("failed to read quota for reconciliation: %s", exc.__class__.__name__)
+                continue
+
+            # Build and enqueue the payload.
+            quota_limit = (
+                api_key.override_monthly_quota
+                if api_key.override_monthly_quota is not None
+                else api_key.plan.monthly_quota
+            )
+
+            payload = webhooks.build_payload(
+                key_id=api_key.key_id,
+                key_name=api_key.name,
+                plan_slug=api_key.plan.slug,
+                month=month,
+                used=used,
+                quota=quota_limit,
+                threshold_pct=api_key.plan.quota_soft_pct,
+            )
+
+            # Attempt to insert the outbox row (unique constraint may catch a race).
+            try:
+                webhooks.enqueue(db, api_key.id, month, payload)
+                reconciled += 1
+            except Exception as exc:
+                logger.debug("reconciliation enqueue failed (likely race): %s", exc.__class__.__name__)
+
+    except Exception as exc:
+        logger.exception("reconcile soft webhooks error: %s", exc.__class__.__name__)
+
+    return reconciled
+
+
 def run() -> dict[str, int]:
     """Run the rollup job. Returns stats."""
     pool = get_pool()
@@ -191,6 +293,9 @@ def run() -> dict[str, int]:
                 continue
             restored = restore_from_rollup(pool, api_key.key_id, rollup.month, rollup.used)
             stats["restored"] += restored
+
+        # Phase 3: Reconcile missed soft threshold webhooks.
+        stats["reconciled"] = reconcile_soft_webhooks(db, pool)
 
     except SQLAlchemyError as exc:
         db.rollback()
