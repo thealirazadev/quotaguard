@@ -134,9 +134,35 @@ def sign_payload(payload: str) -> str:
     return f"sha256={sig}"
 
 
+def _record_failure(db: Session, row: WebhookOutbox, key_id: str | None, error: str) -> None:
+    """Schedule the next attempt, or park the row once the attempt cap is reached.
+
+    Exhaustion is logged here, exactly once per row, rather than on every pass.
+    """
+    row.attempts += 1
+    row.last_error = error
+    row.next_attempt_at = compute_next_attempt(row.attempts)
+    db.commit()
+    context = {"key_id": key_id, "month": row.month}
+    if row.attempts >= get_settings().webhook_max_attempts:
+        logger.error(
+            "webhook delivery exhausted after %s attempts: %s",
+            row.attempts,
+            error,
+            extra={"event": "webhook.exhausted", **context},
+        )
+    else:
+        logger.warning(
+            "webhook delivery failed, retrying: %s",
+            error,
+            extra={"event": "webhook.retry", **context},
+        )
+
+
 def deliver_one(db: Session, row: WebhookOutbox, plan: Plan) -> bool:
     """POST the webhook and update the row. Returns True on success (2xx), False on failure."""
     settings = get_settings()
+    key_id = db.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id))
     signature = sign_payload(row.payload)
     headers = {
         "User-Agent": USER_AGENT,
@@ -153,31 +179,22 @@ def deliver_one(db: Session, row: WebhookOutbox, plan: Plan) -> bool:
                 headers=headers,
                 timeout=settings.webhook_timeout_seconds,
             )
-        if 200 <= resp.status_code < 300:
-            row.delivered_at = utcnow()
-            row.last_error = None
-            db.commit()
-            logger.info(
-                "webhook delivered",
-                extra={
-                    "key_id": db.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id)),
-                    "month": row.month,
-                    "status": resp.status_code,
-                },
-            )
-            return True
-        else:
-            row.attempts += 1
-            row.last_error = f"HTTP {resp.status_code}"
-            row.next_attempt_at = compute_next_attempt(row.attempts)
-            db.commit()
-            return False
-    except (httpx.RequestError, httpx.TimeoutException) as exc:
-        row.attempts += 1
-        row.last_error = exc.__class__.__name__
-        row.next_attempt_at = compute_next_attempt(row.attempts)
-        db.commit()
+    except httpx.RequestError as exc:
+        _record_failure(db, row, key_id, exc.__class__.__name__)
         return False
+
+    if not 200 <= resp.status_code < 300:
+        _record_failure(db, row, key_id, f"HTTP {resp.status_code}")
+        return False
+
+    row.delivered_at = utcnow()
+    row.last_error = None
+    db.commit()
+    logger.info(
+        "webhook delivered",
+        extra={"event": "webhook.delivered", "key_id": key_id, "month": row.month},
+    )
+    return True
 
 
 def deliver_webhooks() -> int:
@@ -215,30 +232,6 @@ def deliver_webhooks() -> int:
 
             deliver_one(session, row, plan)
             processed += 1
-
-        # Check for exhausted rows and log them.
-        exhausted = (
-            session.query(WebhookOutbox)
-            .filter(
-                and_(
-                    WebhookOutbox.delivered_at.is_(None),
-                    WebhookOutbox.attempts >= settings.webhook_max_attempts,
-                )
-            )
-            .all()
-        )
-
-        for row in exhausted:
-            key_id = session.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id))
-            logger.warning(
-                "webhook.exhausted",
-                extra={
-                    "key_id": key_id,
-                    "month": row.month,
-                    "attempts": row.attempts,
-                    "last_error": row.last_error,
-                },
-            )
 
     except SQLAlchemyError as exc:
         session.rollback()
