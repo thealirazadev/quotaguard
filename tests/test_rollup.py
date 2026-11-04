@@ -52,3 +52,37 @@ async def test_restore_never_lowers_or_recounts_a_present_counter(redis_client, 
 
     assert rollup.run()["restored"] == 0
     assert await redis_client.get(qkey) == "42"
+
+
+async def test_release_lock_never_deletes_a_lock_taken_over_mid_release(redis_client, monkeypatch):
+    """A client-side GET then DEL lets another run take the lock in between."""
+    pool = app_redis.get_pool()
+    token = rollup.acquire_lock(pool)
+    original = pool.execute_command
+    taken_over = []
+
+    def racing(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[:2] == ("GET", rollup.LOCK_KEY):
+            # Our lock expires here and another run acquires it.
+            original("SET", rollup.LOCK_KEY, "other-run")
+            taken_over.append(True)
+        return result
+
+    monkeypatch.setattr(pool, "execute_command", racing)
+    rollup.release_lock(pool, token)
+    monkeypatch.undo()
+
+    expected = "other-run" if taken_over else None
+    assert await redis_client.get(rollup.LOCK_KEY) == expected
+
+
+async def test_release_lock_leaves_a_lock_held_by_another_run(redis_client):
+    pool = app_redis.get_pool()
+    token = rollup.acquire_lock(pool)
+    with pytest.raises(rollup.LockNotAcquired):
+        rollup.acquire_lock(pool)
+
+    await redis_client.set(rollup.LOCK_KEY, "other-run")
+    rollup.release_lock(pool, token)
+    assert await redis_client.get(rollup.LOCK_KEY) == "other-run"

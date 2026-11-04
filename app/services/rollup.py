@@ -29,6 +29,11 @@ class LockNotAcquired(Exception):
     pass
 
 
+def _run_script(pool, name: str, keys: list[str], args: list) -> object:
+    """Run one of the app/lua scripts on the sync pool; redis-py reloads it on NOSCRIPT."""
+    return pool.register_script(ScriptRegistry._source(name))(keys=keys, args=args)
+
+
 def acquire_lock(pool) -> str:
     """Acquire the advisory lock, returning the token. Raises LockNotAcquired on failure."""
     token = str(uuid.uuid4())
@@ -42,17 +47,13 @@ def acquire_lock(pool) -> str:
 
 
 def release_lock(pool, token: str) -> None:
-    """Release the lock if we still hold it."""
+    """Release the lock if we still hold it (compare-and-delete in unlock.lua).
+
+    A run that outlived the lock TTL must not delete a lock another run now holds.
+    """
     try:
-        # Try to use the unlock.lua script if available; fall back to a simple DELETE.
-        # This ensures we only delete if the token matches.
-        registry = getattr(pool, "_script_registry", None)
-        if registry and "unlock" in registry.scripts:
-            registry.scripts["unlock"](keys=[LOCK_KEY], args=[token])
-        else:
-            # Fallback: just check and delete. Not atomic, but safe for our use.
-            if pool.execute_command("GET", LOCK_KEY) == token:
-                pool.execute_command("DEL", LOCK_KEY)
+        if not _run_script(pool, "unlock", [LOCK_KEY], [token]):
+            logger.warning("rollup lock expired before release")
     except Exception as exc:
         logger.warning("failed to release rollup lock: %s", exc.__class__.__name__)
 
@@ -141,11 +142,6 @@ def upsert_rollup(db: Session, api_key_id: int, month: str, used: int, quota_lim
     else:
         db.add(Rollup(api_key_id=api_key_id, month=month, used=used, quota_limit=quota_limit))
         db.commit()
-
-
-def _run_script(pool, name: str, keys: list[str], args: list) -> object:
-    """Run one of the app/lua scripts on the sync pool; redis-py reloads it on NOSCRIPT."""
-    return pool.register_script(ScriptRegistry._source(name))(keys=keys, args=args)
 
 
 def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int:
