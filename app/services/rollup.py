@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import ApiKey, Rollup, WebhookOutbox
-from app.redis_client import get_pool, get_registry
+from app.redis_client import ScriptRegistry, get_pool
 from app.services import webhooks
 
 logger = logging.getLogger("quotaguard.rollup")
@@ -143,6 +143,11 @@ def upsert_rollup(db: Session, api_key_id: int, month: str, used: int, quota_lim
         db.commit()
 
 
+def _run_script(pool, name: str, keys: list[str], args: list) -> object:
+    """Run one of the app/lua scripts on the sync pool; redis-py reloads it on NOSCRIPT."""
+    return pool.register_script(ScriptRegistry._source(name))(keys=keys, args=args)
+
+
 def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int:
     """Restore a quota counter from its rollup value if it was lost.
 
@@ -154,17 +159,8 @@ def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int
         month_end = month_end_seconds(year, month_num)
 
         redis_key = f"qg:q:{key_id}:{month}"
-        registry = get_registry()
-
-        if "restore" not in registry.scripts:
-            logger.warning("restore.lua not loaded in script registry")
-            return 0
-
-        result = registry.scripts["restore"](keys=[redis_key], args=[rollup_value, month_end])
-        if result != rollup_value:
-            # The current value was not below the rollup; no restore needed.
-            return 0
-        return 1
+        shortfall = _run_script(pool, "restore", [redis_key], [rollup_value, month_end])
+        return 1 if int(shortfall) > 0 else 0
     except Exception as exc:
         logger.warning("restore failed for %s %s: %s", key_id, month, exc.__class__.__name__)
         return 0
