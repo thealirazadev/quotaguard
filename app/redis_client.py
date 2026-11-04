@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import redis
 import redis.asyncio as redis_asyncio
 from redis.exceptions import NoScriptError, RedisError
 
@@ -58,6 +59,7 @@ class ScriptRegistry:
 
 _client: redis_asyncio.Redis | None = None
 _registry: ScriptRegistry | None = None
+_pool: redis.Redis | None = None
 
 
 def get_client() -> redis_asyncio.Redis:
@@ -75,6 +77,26 @@ def get_client() -> redis_asyncio.Redis:
     return _client
 
 
+def get_pool() -> redis.Redis:
+    """Synchronous client for the background jobs (rollup, usage report).
+
+    They run in worker threads rather than on the event loop, so they cannot share
+    the asyncio pool. Replies are decoded to str because these callers parse keys
+    and compare lock tokens as text.
+    """
+    global _pool
+    if _pool is None:
+        settings = get_settings()
+        timeout = settings.redis_timeout_ms / 1000
+        _pool = redis.Redis.from_url(
+            settings.redis_url,
+            socket_timeout=timeout,
+            socket_connect_timeout=timeout,
+            decode_responses=True,
+        )
+    return _pool
+
+
 def get_registry() -> ScriptRegistry:
     global _registry
     if _registry is None:
@@ -83,9 +105,15 @@ def get_registry() -> ScriptRegistry:
 
 
 async def close() -> None:
-    """Drop the pool and the cached SHAs; the next caller rebuilds both."""
-    global _client, _registry
+    """Drop the pools and the cached SHAs; the next caller rebuilds them."""
+    global _client, _registry, _pool
     client, _client, _registry = _client, None, None
+    pool, _pool = _pool, None
+    if pool is not None:
+        try:
+            pool.close()
+        except RedisError as exc:
+            logger.warning("redis sync pool close failed: %s", exc.__class__.__name__)
     if client is None:
         return
     try:
