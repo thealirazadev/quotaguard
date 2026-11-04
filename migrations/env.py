@@ -11,7 +11,9 @@ from app.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Loggers created before the migration ran (the app imports them when the test
+    # suite migrates in-process) must keep logging.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 database_url = get_settings().database_url
