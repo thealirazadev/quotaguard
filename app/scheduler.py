@@ -24,7 +24,8 @@ class Scheduler:
 
         while True:
             try:
-                processed = webhooks.deliver_webhooks()
+                # Sync SQLite and httpx calls; off the loop so checks are never stalled.
+                processed = await asyncio.to_thread(webhooks.deliver_webhooks)
                 if processed > 0:
                     logger.debug("webhook delivery pass", extra={"processed": processed})
             except Exception as exc:
@@ -43,7 +44,7 @@ class Scheduler:
 
         while True:
             try:
-                stats = rollup.run()
+                stats = await asyncio.to_thread(rollup.run)
                 logger.info(
                     "rollup scheduled",
                     extra={
