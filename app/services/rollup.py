@@ -1,6 +1,5 @@
 """Monthly quota rollup: scan Redis counters, upsert to SQLite idempotently, restore after loss."""
 
-import calendar
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -11,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import ApiKey, Rollup, WebhookOutbox, utcnow
+from app.models import ApiKey, Rollup, WebhookOutbox
 from app.redis_client import get_pool, get_registry
 from app.services import webhooks
 
@@ -65,7 +64,9 @@ def scan_quota_keys(pool) -> list[tuple[str, int]]:
 
     try:
         while True:
-            cursor, keys = pool.execute_command("SCAN", cursor, "MATCH", QUOTA_PATTERN, "COUNT", SCAN_COUNT)
+            cursor, keys = pool.execute_command(
+                "SCAN", cursor, "MATCH", QUOTA_PATTERN, "COUNT", SCAN_COUNT
+            )
             for key in keys:
                 value = pool.execute_command("GET", key)
                 if value is not None:
@@ -86,7 +87,9 @@ def scan_flag_keys(pool) -> list[str]:
 
     try:
         while True:
-            cursor, keys = pool.execute_command("SCAN", cursor, "MATCH", FLAG_PATTERN, "COUNT", SCAN_COUNT)
+            cursor, keys = pool.execute_command(
+                "SCAN", cursor, "MATCH", FLAG_PATTERN, "COUNT", SCAN_COUNT
+            )
             for key in keys:
                 results.append(key.decode() if isinstance(key, bytes) else key)
             if cursor == 0:
@@ -123,14 +126,10 @@ def month_end_seconds(year: int, month: int) -> int:
     return int(next_month_date.timestamp())
 
 
-def upsert_rollup(
-    db: Session, api_key_id: int, month: str, used: int, quota_limit: int
-) -> None:
+def upsert_rollup(db: Session, api_key_id: int, month: str, used: int, quota_limit: int) -> None:
     """Idempotent upsert: only raise the used counter, never lower it."""
     existing = db.scalar(
-        select(Rollup).where(
-            and_(Rollup.api_key_id == api_key_id, Rollup.month == month)
-        )
+        select(Rollup).where(and_(Rollup.api_key_id == api_key_id, Rollup.month == month))
     )
 
     if existing:
@@ -211,7 +210,9 @@ def reconcile_soft_webhooks(db: Session, pool) -> int:
                 quota_value_str = pool.execute_command("GET", quota_key)
                 used = int(quota_value_str) if quota_value_str else 0
             except Exception as exc:
-                logger.warning("failed to read quota for reconciliation: %s", exc.__class__.__name__)
+                logger.warning(
+                    "failed to read quota for reconciliation: %s", exc.__class__.__name__
+                )
                 continue
 
             # Build and enqueue the payload.
@@ -236,7 +237,9 @@ def reconcile_soft_webhooks(db: Session, pool) -> int:
                 webhooks.enqueue(db, api_key.id, month, payload)
                 reconciled += 1
             except Exception as exc:
-                logger.debug("reconciliation enqueue failed (likely race): %s", exc.__class__.__name__)
+                logger.debug(
+                    "reconciliation enqueue failed (likely race): %s", exc.__class__.__name__
+                )
 
     except Exception as exc:
         logger.exception("reconcile soft webhooks error: %s", exc.__class__.__name__)

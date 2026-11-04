@@ -12,7 +12,7 @@ import hmac
 import json
 import logging
 import random
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta
 
 import httpx
 from sqlalchemy import and_, select
@@ -115,7 +115,7 @@ def enqueue_soft_warning(key: ResolvedKey, month: str, used: int) -> bool:
 def compute_next_attempt(attempt_num: int) -> datetime:
     """Backoff schedule: min(30 * 2^(n-1), 3600) seconds with 0.8-1.2 jitter."""
     exponent = min(attempt_num - 1, MAX_DOUBLINGS)
-    base_seconds = min(BASE_BACKOFF_SECONDS * (2 ** exponent), MAX_BACKOFF_SECONDS)
+    base_seconds = min(BASE_BACKOFF_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
     jitter = random.uniform(0.8, 1.2)
     delay_seconds = base_seconds * jitter
     return utcnow() + timedelta(seconds=delay_seconds)
@@ -188,13 +188,18 @@ def deliver_webhooks() -> int:
 
     try:
         now = utcnow()
-        due_rows = session.query(WebhookOutbox).filter(
-            and_(
-                WebhookOutbox.delivered_at.is_(None),
-                WebhookOutbox.next_attempt_at <= now,
-                WebhookOutbox.attempts < settings.webhook_max_attempts,
+        due_rows = (
+            session.query(WebhookOutbox)
+            .filter(
+                and_(
+                    WebhookOutbox.delivered_at.is_(None),
+                    WebhookOutbox.next_attempt_at <= now,
+                    WebhookOutbox.attempts < settings.webhook_max_attempts,
+                )
             )
-        ).limit(BATCH_SIZE).all()
+            .limit(BATCH_SIZE)
+            .all()
+        )
 
         for row in due_rows:
             api_key = session.scalar(select(ApiKey).where(ApiKey.id == row.api_key_id))
@@ -203,19 +208,25 @@ def deliver_webhooks() -> int:
                 continue
             plan = session.scalar(select(Plan).where(Plan.id == api_key.plan_id))
             if plan is None or not plan.webhook_url:
-                logger.warning("api_key has no plan or webhook_url", extra={"api_key_id": api_key.key_id})
+                logger.warning(
+                    "api_key has no plan or webhook_url", extra={"api_key_id": api_key.key_id}
+                )
                 continue
 
             deliver_one(session, row, plan)
             processed += 1
 
         # Check for exhausted rows and log them.
-        exhausted = session.query(WebhookOutbox).filter(
-            and_(
-                WebhookOutbox.delivered_at.is_(None),
-                WebhookOutbox.attempts >= settings.webhook_max_attempts,
+        exhausted = (
+            session.query(WebhookOutbox)
+            .filter(
+                and_(
+                    WebhookOutbox.delivered_at.is_(None),
+                    WebhookOutbox.attempts >= settings.webhook_max_attempts,
+                )
             )
-        ).all()
+            .all()
+        )
 
         for row in exhausted:
             key_id = session.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id))

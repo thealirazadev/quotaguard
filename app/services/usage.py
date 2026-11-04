@@ -1,9 +1,9 @@
 """Usage report: current month from Redis, history from rollups."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
-from sqlalchemy import and_, desc, select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.models import ApiKey, Rollup, utcnow
@@ -25,8 +25,8 @@ def get_current_month() -> str:
 def get_live_usage(key_id: str) -> dict | None:
     """Get current month usage from Redis for a key.
 
-    Returns {"month": "2026-07", "used": 12401, "quota": 500000, "soft_threshold_crossed": false, "source": "live"}
-    or None if the key has no Redis counter this month.
+    Returns {"month": "2026-07", "used": 12401, "soft_threshold_crossed": False,
+    "source": "live"} or None if the key has no Redis counter this month.
     """
     pool = get_pool()
     current_month = get_current_month()
@@ -56,7 +56,8 @@ def get_live_usage(key_id: str) -> dict | None:
 def get_rollup_history(db: Session, api_key_id: int, months: int = 3) -> list[dict]:
     """Get rollup history for a key (prior months, most recent first).
 
-    Returns [{"month": "2026-06", "used": 431009, "quota": 500000, "soft_threshold_crossed": false, "source": "rollup"}, ...]
+    Returns [{"month": "2026-06", "used": 431009, "quota": 500000,
+    "soft_threshold_crossed": False, "source": "rollup"}, ...]
     """
     try:
         rollups = (
@@ -69,13 +70,15 @@ def get_rollup_history(db: Session, api_key_id: int, months: int = 3) -> list[di
 
         result = []
         for rollup in rollups:
-            result.append({
-                "month": rollup.month,
-                "used": rollup.used,
-                "quota": rollup.quota_limit,
-                "soft_threshold_crossed": False,  # We don't track this in rollups
-                "source": "rollup",
-            })
+            result.append(
+                {
+                    "month": rollup.month,
+                    "used": rollup.used,
+                    "quota": rollup.quota_limit,
+                    "soft_threshold_crossed": False,  # We don't track this in rollups
+                    "source": "rollup",
+                }
+            )
         return result
     except Exception as exc:
         logger.exception("failed to fetch rollup history: %s", exc.__class__.__name__)
