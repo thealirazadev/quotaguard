@@ -86,3 +86,13 @@ async def test_release_lock_leaves_a_lock_held_by_another_run(redis_client):
     await redis_client.set(rollup.LOCK_KEY, "other-run")
     rollup.release_lock(pool, token)
     assert await redis_client.get(rollup.LOCK_KEY) == "other-run"
+
+
+async def test_restore_skips_months_past_their_retention(redis_client, key_id):
+    old = f"qg:q:{key_id}:2020-01"
+    await redis_client.set(old, 7)
+    rollup.run()
+    await redis_client.delete(old)
+
+    assert rollup.run()["restored"] == 0
+    assert await redis_client.exists(old) == 0
