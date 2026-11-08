@@ -291,3 +291,5 @@ against the local Redis 7.2.4, run after each commit.
   rollups, replayed runs, and concurrent live traffic can never lower a persisted value or lose
   increments. `redis_down_policy` defaults to `fail_open` because a limiter outage should not
   take down the customer's API; plans guarding paid quotas opt into `fail_closed`.
+- 2026-11-08 - Security upgrades: fastapi 0.162.2 (starlette 1.10), black 26.10.1, pytest 9.0.3,
+  pytest-asyncio 1.4.1, certifi. All 146 tests pass unchanged.
