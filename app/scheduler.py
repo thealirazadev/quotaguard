@@ -24,7 +24,8 @@ class Scheduler:
 
         while True:
             try:
-                processed = webhooks.deliver_webhooks()
+                # Blocking HTTP and SQLite work runs off the event loop; /v1/check never waits.
+                processed = await asyncio.to_thread(webhooks.deliver_webhooks)
                 if processed > 0:
                     logger.debug("webhook delivery pass", extra={"processed": processed})
             except Exception as exc:
@@ -43,7 +44,7 @@ class Scheduler:
 
         while True:
             try:
-                stats = rollup.run()
+                stats = await asyncio.to_thread(rollup.run)
                 logger.info(
                     "rollup scheduled",
                     extra={
@@ -54,7 +55,7 @@ class Scheduler:
                     },
                 )
             except rollup.LockNotAcquired:
-                logger.debug("rollup.skipped_locked")
+                logger.info("rollup.skipped_locked")
             except Exception as exc:
                 logger.exception("rollup loop error: %s", exc.__class__.__name__)
 
