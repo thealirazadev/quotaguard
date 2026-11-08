@@ -27,6 +27,11 @@ work; log every non-obvious decision with its reason. Keep entries short and dat
   lookup, and an unbounded cache) plus one missing test on the check route's service token, and
   two findings flagged for the owner because fixing them means changing
   `docs/architecture.md`. Three commits; 146 tests. See "Phase 2 defect review" below.
+- 2026-11-08 - CI fixed after the 2026-08-16 phase 3 work-in-progress commits. The rollup and
+  usage services imported a `get_pool` that did not exist; it now returns a synchronous Redis
+  client, because those jobs run their own sync database session outside the request path. Lint
+  and formatting fixed. 146 tests pass. The rollup, restore, and reconcile code has no tests yet,
+  and phase 3 has not been re-verified against its checklist.
 
 ## Project status
 
