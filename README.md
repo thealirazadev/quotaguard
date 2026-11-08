@@ -18,9 +18,8 @@ assumed.
 
 ## Features
 
-Plan and key management and the atomic check endpoint are implemented. The quota lifecycle
-(webhooks, rollups, usage) and the Redis-down policies follow in later phases of
-`docs/phases.md`.
+All four phases of `docs/phases.md` are implemented: plan and key management, the atomic check
+endpoint, the quota lifecycle (webhooks, rollups, usage), and per-plan Redis-down policies.
 
 - `POST /v1/check`: allow/deny plus limit, remaining, and reset per
   draft-ietf-httpapi-ratelimit-headers-07, in one `EVALSHA` round trip.
@@ -187,9 +186,16 @@ would test the mock. CI runs lint and the full suite against a Redis 7 service c
 
 ## Status
 
-Phases 1 and 2 complete: the project skeleton, structured logging, the error envelope, the plans
-and api_keys schema, admin authentication, the plan and key admin API, the CLI, and the atomic
-check path (`app/lua/check.lua`, the script registry, the key cache, `POST /v1/check`, and the
-draft RateLimit headers). Phase 3 adds the quota lifecycle (soft-threshold webhooks, rollups,
-usage reports) and Phase 4 the Redis-down policies. Implementation follows `docs/phases.md` one
-phase at a time.
+Phases 1 to 4 are complete and were verified end to end against a real Redis on 2026-11-09:
+
+- Quota lifecycle: crossing the soft threshold sent exactly one HMAC-signed webhook; `rollup
+  run` is idempotent and skips while another run holds the lock; after `FLUSHDB` the next
+  rollup restored the month counter; a soft flag with no outbox row was reconciled into one
+  delivered webhook; `GET /v1/usage/{key_id}` and `quotaguard usage` report live and rollup
+  months.
+- Redis outage: with Redis stopped, a `fail_open` plan answered `allowed: true, degraded: true`
+  and a `fail_closed` plan `allowed: false, reason: "redis_unavailable"`, both in about 5 ms
+  with no 500s; `/health` reported `redis: "down"` with HTTP 200 and admin routes kept working.
+  When Redis came back the check script reloaded on its own and decisions recovered with no
+  restart.
+- Every check is a single `EVALSHA` round trip (asserted by a test from Redis command stats).
