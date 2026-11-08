@@ -293,3 +293,25 @@ against the local Redis 7.2.4, run after each commit.
   take down the customer's API; plans guarding paid quotas opt into `fail_closed`.
 - 2026-11-08 - Security upgrades: fastapi 0.162.2 (starlette 1.10), black 26.10.1, pytest 9.0.3,
   pytest-asyncio 1.4.1, certifi. All 146 tests pass unchanged.
+
+## Phases 3 and 4 (2026-11-09)
+
+- Phase 3 verified against a real Redis and fixed. Found by running it: `restore_from_rollup`
+  called the async script registry from the sync job (a coroutine, never awaited), so restore
+  never ran and returned 0; `release_lock` fell back to a non-atomic GET then DEL. Both now run
+  `restore.lua`/`unlock.lua` with `eval` on the sync client (restore.lua now uses INCRBY of the
+  shortfall, matching architecture.md). `webhook.exhausted` was logged for every exhausted row
+  on every 5 s pass; it is now logged once when the row gives up. The scheduler ran blocking
+  HTTP and SQLite work on the event loop, which could stall `/v1/check` behind a slow webhook
+  endpoint; both loops now use `asyncio.to_thread`. The usage report listed the current month
+  twice after a rollup, returned one month too few without live data, and always reported
+  `soft_threshold_crossed: false` for history; history now excludes the current month, falls
+  back to the current-month rollup when Redis lost it, and takes the flag from the outbox.
+  Added `GET /v1/usage/{key_id}`, `quotaguard usage`, `quotaguard rollup run`, and tests.
+- Phase 4: per-plan fail-open/fail-closed on any RedisError in the check route with
+  `check.redis_down` WARNING once per check; `/health` reports `redis: ok|down` and stays 200;
+  latency smoke test asserts one EVALSHA per check from Redis command stats. Verified live by
+  stopping and restarting Redis (script reload on NOSCRIPT, no restart).
+- Test note: Alembic's fileConfig in the session fixture disables existing loggers; tests that
+  assert on a module logger re-enable it. Tests calling `/health` take the `script` fixture
+  because the route now touches the Redis pool.

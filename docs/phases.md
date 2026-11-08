@@ -151,21 +151,21 @@ monthly usage is durably rolled up, restorable, and reportable.
 10. `docs: document quota lifecycle in readme`
 
 ### Verification checklist
-- [ ] Set quota 10, soft 80%, webhook to a local echo server: the check that crosses 8 returns
+- [x] Set quota 10, soft 80%, webhook to a local echo server: the check that crosses 8 returns
       `soft_threshold_crossed: true` exactly once; the echo server receives exactly one signed
       POST with the documented payload; further checks and even a re-crossing after restore fire
       nothing (flag + unique constraint).
 - [ ] Point the webhook at a dead port: attempts increment on the backoff schedule (temporarily
       set `WEBHOOK_MAX_ATTEMPTS=2` to observe exhaustion); `webhook.exhausted` logged; the row
       keeps `last_error`; the check path latency is unaffected throughout.
-- [ ] `rollup run` twice in a row: identical `rollups` rows (idempotent); run it while the
+- [x] `rollup run` twice in a row: identical `rollups` rows (idempotent); run it while the
       scheduler loop fires: one side logs `rollup.skipped_locked`; concurrent CLI + scheduler
       never double-write.
-- [ ] `FLUSHDB`, then `rollup run`: the current month counter is restored to the persisted
+- [x] `FLUSHDB`, then `rollup run`: the current month counter is restored to the persisted
       value; live checks during the restore lose no increments (restore is delta-based INCRBY).
-- [ ] Crash simulation: set the soft flag manually in Redis without an outbox row; the next
+- [x] Crash simulation: set the soft flag manually in Redis without an outbox row; the next
       rollup inserts the missing row (reconciliation).
-- [ ] `GET /v1/usage/{key_id}?months=3` matches Redis for the current month and rollups for
+- [x] `GET /v1/usage/{key_id}?months=3` matches Redis for the current month and rollups for
       prior months; unknown key returns `404`; the CLI `usage` table matches the endpoint.
 - [ ] Lint, format, full pytest suite, and CI green.
 
@@ -195,15 +195,15 @@ check path meets its latency budget.
 6. `docs: finalize readme with integration and operations guide`
 
 ### Verification checklist
-- [ ] Stop Redis: a fail-open plan's check returns `allowed: true, degraded: true` with null
+- [x] Stop Redis: a fail-open plan's check returns `allowed: true, degraded: true` with null
       header fields; a fail-closed plan's returns `allowed: false, reason: "redis_unavailable"`;
       both answer within the timeout budget and log `check.redis_down` WARNING once per check.
-- [ ] Start Redis again: checks recover to normal decisions without restarting quotaguard
+- [x] Start Redis again: checks recover to normal decisions without restarting quotaguard
       (NOSCRIPT path reloads the script; verify in logs).
-- [ ] `GET /health` shows `redis: "down"` during the outage with HTTP 200, `redis: "ok"` after.
+- [x] `GET /health` shows `redis: "down"` during the outage with HTTP 200, `redis: "ok"` after.
 - [ ] Kill Redis mid-burst: no 500s from `/v1/check` at any point; SQLite-backed admin routes
       keep working throughout.
-- [ ] Latency smoke test passes (p50 of local checks a few milliseconds; exactly one Redis
+- [x] Latency smoke test passes (p50 of local checks a few milliseconds; exactly one Redis
       command per check confirmed once more via `monitor`).
 - [ ] Log review of a full manual run: only documented event keys, DEBUG silence at INFO level
       for allowed checks, no secrets, no tracebacks.
