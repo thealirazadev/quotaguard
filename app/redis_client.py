@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import redis
 import redis.asyncio as redis_asyncio
 from redis.exceptions import NoScriptError, RedisError
 
@@ -58,6 +59,7 @@ class ScriptRegistry:
 
 _client: redis_asyncio.Redis | None = None
 _registry: ScriptRegistry | None = None
+_pool: redis.Redis | None = None
 
 
 def get_client() -> redis_asyncio.Redis:
@@ -73,6 +75,21 @@ def get_client() -> redis_asyncio.Redis:
             decode_responses=False,
         )
     return _client
+
+
+def get_pool() -> redis.Redis:
+    """Synchronous client for the background jobs, which run outside the request path."""
+    global _pool
+    if _pool is None:
+        settings = get_settings()
+        timeout = settings.redis_timeout_ms / 1000
+        _pool = redis.Redis.from_url(
+            settings.redis_url,
+            socket_timeout=timeout,
+            socket_connect_timeout=timeout,
+            decode_responses=True,
+        )
+    return _pool
 
 
 def get_registry() -> ScriptRegistry:
