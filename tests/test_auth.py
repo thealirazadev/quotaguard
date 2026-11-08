@@ -35,11 +35,11 @@ async def test_admin_routes_require_the_admin_token(client, method, path, header
     }
 
 
-async def test_health_is_open(client):
+async def test_health_is_open(client, script):
     response = await client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "redis": "ok"}
 
 
 async def test_service_token_is_a_no_op_while_unset():
@@ -108,7 +108,7 @@ async def test_malformed_json_uses_the_error_envelope(client):
     assert not response.json()["error"]["message"].startswith("1:")
 
 
-async def test_responses_echo_a_request_id(client):
+async def test_responses_echo_a_request_id(client, script):
     generated = await client.get("/health")
     echoed = await client.get("/health", headers={"X-Request-ID": "abc123"})
 
