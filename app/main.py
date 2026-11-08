@@ -11,7 +11,7 @@ from app import redis_client
 from app.config import get_settings
 from app.errors import register_exception_handlers
 from app.logging import RequestIdMiddleware, configure_logging
-from app.routers import admin, check, health
+from app.routers import admin, check, health, usage
 from app.scheduler import scheduler_lifespan
 
 logger = logging.getLogger("quotaguard.app")
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(check.router)
     app.include_router(admin.router)
+    app.include_router(usage.router)
     return app
 
 
