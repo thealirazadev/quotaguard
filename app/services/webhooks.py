@@ -166,18 +166,29 @@ def deliver_one(db: Session, row: WebhookOutbox, plan: Plan) -> bool:
                 },
             )
             return True
-        else:
-            row.attempts += 1
-            row.last_error = f"HTTP {resp.status_code}"
-            row.next_attempt_at = compute_next_attempt(row.attempts)
-            db.commit()
-            return False
-    except (httpx.RequestError, httpx.TimeoutException) as exc:
-        row.attempts += 1
-        row.last_error = exc.__class__.__name__
-        row.next_attempt_at = compute_next_attempt(row.attempts)
-        db.commit()
+        _record_failure(db, row, f"HTTP {resp.status_code}")
         return False
+    except (httpx.RequestError, httpx.TimeoutException) as exc:
+        _record_failure(db, row, exc.__class__.__name__)
+        return False
+
+
+def _record_failure(db: Session, row: WebhookOutbox, error: str) -> None:
+    """Schedule the next attempt, or park the row and log webhook.exhausted exactly once."""
+    row.attempts += 1
+    row.last_error = error
+    row.next_attempt_at = compute_next_attempt(row.attempts)
+    db.commit()
+    if row.attempts >= get_settings().webhook_max_attempts:
+        logger.warning(
+            "webhook.exhausted",
+            extra={
+                "key_id": db.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id)),
+                "month": row.month,
+                "attempts": row.attempts,
+                "last_error": row.last_error,
+            },
+        )
 
 
 def deliver_webhooks() -> int:
@@ -215,30 +226,6 @@ def deliver_webhooks() -> int:
 
             deliver_one(session, row, plan)
             processed += 1
-
-        # Check for exhausted rows and log them.
-        exhausted = (
-            session.query(WebhookOutbox)
-            .filter(
-                and_(
-                    WebhookOutbox.delivered_at.is_(None),
-                    WebhookOutbox.attempts >= settings.webhook_max_attempts,
-                )
-            )
-            .all()
-        )
-
-        for row in exhausted:
-            key_id = session.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id))
-            logger.warning(
-                "webhook.exhausted",
-                extra={
-                    "key_id": key_id,
-                    "month": row.month,
-                    "attempts": row.attempts,
-                    "last_error": row.last_error,
-                },
-            )
 
     except SQLAlchemyError as exc:
         session.rollback()
