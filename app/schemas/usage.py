@@ -20,4 +20,6 @@ class UsageReport(BaseModel):
     key_id: str = Field(description="Key identifier")
     name: str = Field(description="Key name")
     plan: str = Field(description="Plan slug")
-    months: list[UsageMonth] = Field(description="Months in order (current live month first, then prior rollups)")
+    months: list[UsageMonth] = Field(
+        description="Months in order (current live month first, then prior rollups)"
+    )

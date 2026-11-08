@@ -20,7 +20,6 @@ class Scheduler:
 
     async def webhook_loop(self) -> None:
         """Periodically deliver due webhooks."""
-        settings = get_settings()
         LOOP_INTERVAL = 5  # Check every 5 seconds; actual delivery is gated by next_attempt_at.
 
         while True:
