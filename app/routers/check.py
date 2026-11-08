@@ -7,6 +7,7 @@ gateway needs a decision on every call rather than an error branch.
 import logging
 
 from fastapi import APIRouter, Depends
+from redis.exceptions import RedisError
 from starlette.concurrency import run_in_threadpool
 
 from app.deps import require_service_token
@@ -44,7 +45,28 @@ async def check(payload: CheckRequest) -> dict:
         )
         return {"data": _refused("revoked_key")}
 
-    result = await checker.run_check(key, payload.resource, payload.cost)
+    try:
+        result = await checker.run_check(key, payload.resource, payload.cost)
+    except RedisError as exc:
+        # Connect, timeout, script error, or a NOSCRIPT reload that failed: answer per the
+        # plan's policy instead of a 500 (docs/api-contracts.md, Redis down).
+        fail_open = key.redis_down_policy == "fail_open"
+        logger.warning(
+            "redis unavailable on the check path",
+            extra={
+                "event": "check.redis_down",
+                "key_id": key.key_id,
+                "policy": key.redis_down_policy,
+                "error_class": exc.__class__.__name__,
+            },
+        )
+        return {
+            "data": CheckOut(
+                allowed=fail_open,
+                reason=None if fail_open else "redis_unavailable",
+                degraded=True,
+            )
+        }
     if result.soft_crossed:
         logger.info(
             "quota soft threshold crossed",
