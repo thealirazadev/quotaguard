@@ -217,6 +217,47 @@ def _key_revoke(session, args: argparse.Namespace) -> int:
     return 0
 
 
+def _usage(session, args: argparse.Namespace) -> int:
+    from app.services import usage as usage_service
+
+    if not 1 <= args.months <= 24:
+        return _fail("--months must be between 1 and 24.")
+    report = usage_service.get_usage_report(session, args.key_id, args.months)
+    if report is None:
+        return _fail(f"no key with id {args.key_id}.")
+    if args.json:
+        _dump(report)
+        return 0
+    rows = [
+        [m["month"], f"{m['used']:,}", f"{m['quota']:,}", f"{m['remaining']:,}", m["source"]]
+        for m in report["months"]
+    ]
+    if rows:
+        print(_table(["month", "used", "quota", "remaining", "source"], rows))
+    else:
+        _say(f"no usage recorded for {args.key_id}", args)
+    return 0
+
+
+def _rollup_run(session, args: argparse.Namespace) -> int:
+    from app.services import rollup
+
+    try:
+        stats = rollup.run()
+    except rollup.LockNotAcquired:
+        _say("skipped: another rollup holds the lock", args)
+        return 0
+    if args.json:
+        _dump(stats)
+    else:
+        _say(
+            f"rollup complete: {stats['scanned']} counters scanned, {stats['upserted']} "
+            f"upserted, {stats['restored']} restored, {stats['reconciled']} webhooks reconciled",
+            args,
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Accepted before or after the subcommand; SUPPRESS keeps the leaf copies
     # from overwriting a value already given at the top level.
@@ -278,6 +319,18 @@ def build_parser() -> argparse.ArgumentParser:
     revoke = key.add_parser("revoke", help="revoke a key permanently", parents=[flags])
     revoke.add_argument("key_id")
     revoke.set_defaults(handler=_key_revoke)
+
+    usage = commands.add_parser("usage", help="monthly usage for a key", parents=[flags])
+    usage.add_argument("key_id")
+    usage.add_argument("--months", type=int, default=3)
+    usage.set_defaults(handler=_usage)
+
+    rollup = commands.add_parser("rollup", help="persist monthly usage").add_subparsers(
+        dest="action", required=True
+    )
+    rollup.add_parser("run", help="run one rollup now", parents=[flags]).set_defaults(
+        handler=_rollup_run
+    )
 
     return parser
 
