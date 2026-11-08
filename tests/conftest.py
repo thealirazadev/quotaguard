@@ -64,10 +64,12 @@ def _migrated_database():
 @pytest.fixture(autouse=True)
 def _clean_tables(_migrated_database):
     """Every test starts from an empty database; children first for the foreign key."""
-    from app.models import ApiKey, Plan
+    from app.models import ApiKey, Plan, Rollup, WebhookOutbox
 
     session = SessionLocal()
     try:
+        session.query(WebhookOutbox).delete()
+        session.query(Rollup).delete()
         session.query(ApiKey).delete()
         session.query(Plan).delete()
         session.commit()
