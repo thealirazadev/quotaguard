@@ -3,6 +3,8 @@
 import logging
 import uuid
 from datetime import UTC, datetime
+from functools import cache
+from pathlib import Path
 
 from redis.exceptions import RedisError
 from sqlalchemy import and_, select
@@ -11,12 +13,20 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import ApiKey, Rollup, WebhookOutbox
-from app.redis_client import get_pool, get_registry
+from app.redis_client import get_pool
 from app.services import webhooks
 
 logger = logging.getLogger("quotaguard.rollup")
 
 LOCK_KEY = "qg:lock:rollup"
+LUA_DIR = Path(__file__).resolve().parent.parent / "lua"
+
+
+@cache
+def _lua(name: str) -> str:
+    return (LUA_DIR / f"{name}.lua").read_text(encoding="utf-8")
+
+
 LOCK_TIMEOUT_MS = 120_000  # 120 seconds
 QUOTA_PATTERN = "qg:q:*"
 FLAG_PATTERN = "qg:f:*"
@@ -42,18 +52,10 @@ def acquire_lock(pool) -> str:
 
 
 def release_lock(pool, token: str) -> None:
-    """Release the lock if we still hold it."""
+    """Release the lock only if this run still holds it (compare-and-delete in unlock.lua)."""
     try:
-        # Try to use the unlock.lua script if available; fall back to a simple DELETE.
-        # This ensures we only delete if the token matches.
-        registry = getattr(pool, "_script_registry", None)
-        if registry and "unlock" in registry.scripts:
-            registry.scripts["unlock"](keys=[LOCK_KEY], args=[token])
-        else:
-            # Fallback: just check and delete. Not atomic, but safe for our use.
-            if pool.execute_command("GET", LOCK_KEY) == token:
-                pool.execute_command("DEL", LOCK_KEY)
-    except Exception as exc:
+        pool.eval(_lua("unlock"), 1, LOCK_KEY, token)
+    except RedisError as exc:
         logger.warning("failed to release rollup lock: %s", exc.__class__.__name__)
 
 
@@ -154,18 +156,11 @@ def restore_from_rollup(pool, key_id: str, month: str, rollup_value: int) -> int
         month_end = month_end_seconds(year, month_num)
 
         redis_key = f"qg:q:{key_id}:{month}"
-        registry = get_registry()
-
-        if "restore" not in registry.scripts:
-            logger.warning("restore.lua not loaded in script registry")
-            return 0
-
-        result = registry.scripts["restore"](keys=[redis_key], args=[rollup_value, month_end])
-        if result != rollup_value:
-            # The current value was not below the rollup; no restore needed.
-            return 0
-        return 1
-    except Exception as exc:
+        before = pool.execute_command("GET", redis_key)
+        after = int(pool.eval(_lua("restore"), 1, redis_key, rollup_value, month_end))
+        # The script only ever raises the counter, so a change means a restore happened.
+        return 1 if after > int(before or 0) else 0
+    except (RedisError, ValueError) as exc:
         logger.warning("restore failed for %s %s: %s", key_id, month, exc.__class__.__name__)
         return 0
 

@@ -12,7 +12,8 @@ local month_end = tonumber(ARGV[2])
 
 local current = tonumber(redis.call("GET", key) or 0)
 if current < floor then
-    redis.call("SET", key, floor)
+    -- INCRBY the shortfall (never SET), per docs/architecture.md; the script is atomic.
+    redis.call("INCRBY", key, floor - current)
     redis.call("EXPIREAT", key, month_end + 3888000)
     return floor
 else
