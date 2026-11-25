@@ -135,7 +135,7 @@ async def test_revoke_is_permanent_and_not_repeatable(client, make_plan, make_ke
 
 
 async def test_admin_writes_touch_no_redis_keys(client, make_plan, make_key, redis_client):
-    """Phase 1 is a configuration surface: nothing here may write admission state."""
+    """The admin API is a configuration surface: nothing here may write admission state."""
     await make_plan()
     key_id = (await make_key())["key_id"]
     await client.patch(

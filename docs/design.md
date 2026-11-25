@@ -101,4 +101,4 @@ With no GUI, accessibility obligations land on the terminal and API surfaces: no
 meaning and `NO_COLOR` respect; tables linear and labeled (no ASCII art) so screen readers read
 them sanely; API and OpenAPI descriptions in plain language. If a web dashboard is ever
 proposed, it starts from semantic HTML, labeled inputs, keyboard operability, visible focus, and
-WCAG AA contrast - and from a new phase, not this build.
+WCAG AA contrast.

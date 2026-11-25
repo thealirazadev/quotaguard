@@ -29,7 +29,7 @@
   resolution from SQLite; fail-open/fail-closed by pointing the Redis client at a closed port;
   rollup CLI against seeded Redis + SQLite proving idempotency and restore.
 - **Manual QA** covers what automation cannot: `redis-cli monitor` single-round-trip checks,
-  real webhook receivers, and the checklists in `docs/phases.md`.
+  real webhook receivers, and stopping and restarting Redis under a running server.
 
 ### Test layout
 
@@ -37,21 +37,26 @@
   `alembic upgrade head`), `client` (ASGITransport, overridden settings), `make_plan`/`make_key`
   factories, `check()` helper posting a valid check.
 - `tests/test_admin_plans.py`, `tests/test_admin_keys.py`, `tests/test_auth.py`,
-  `tests/test_cli.py` - Phase 1 surface.
+  `tests/test_cli.py` - admin API, auth, and CLI.
 - `tests/test_lua_check.py` - script behavior against Redis (per-layer, TTLs, deny purity).
 - `tests/test_refill_math.py`, `tests/test_civil_dates.py` - mirror-math property checks.
 - `tests/test_concurrency.py` - the over-admission tests.
-- `tests/test_check_api.py`, `tests/test_headers.py`, `tests/test_keycache.py` - Phase 2 HTTP.
-- `tests/test_webhooks.py`, `tests/test_rollup.py`, `tests/test_usage.py` - Phase 3.
-- `tests/test_failure_policy.py`, `tests/test_latency.py` - Phase 4.
+- `tests/test_check_api.py`, `tests/test_headers.py`, `tests/test_keycache.py` - the check
+  endpoint over HTTP, header rendering, and the key cache.
+- `tests/test_webhook_delivery.py`, `tests/test_lifecycle.py` - webhook delivery and signing,
+  rollups, restore after Redis loss, reconciliation, and usage reports.
+- `tests/test_redis_down.py`, `tests/test_latency.py` - Redis-down policies, health reporting,
+  and the one-round-trip check.
 
 Coverage target: every documented error `code`, every deny `reason`, every log event key, and
 every CLI exit code produced by at least one test. Meaningful paths over percentages.
 
 ## CI
 
-GitHub Actions, two jobs on every push/PR: `lint` (ruff + black) and `test` (pytest) with a
-Redis service container:
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request, with uv
+pinned to 0.11.28 (`astral-sh/setup-uv`) and dependencies installed with `uv sync --locked`. Two
+jobs: `lint` (`uv run ruff check .`, then `uv run black --check .`) and `test` (`uv run pytest`)
+with a Redis service container:
 
 ```yaml
 services:
@@ -80,9 +85,8 @@ uv run pytest tests/test_concurrency.py            # the money test alone
 
 ## Definition of done for any feature
 
-A feature (one commit per `docs/phases.md`) is done only when, from a clean checkout with Redis
+A feature is done only when, from a clean checkout with Redis
 running: `uv sync`, `uv run ruff check .`, `uv run black --check .`,
 `uv run python -c "import app.main"`, `uv run alembic upgrade head`, and `uv run pytest` all
 succeed. Any change touching `app/lua/` additionally requires the concurrency tests re-run and
-called out in the commit. If the same failure survives two fix attempts, stop and report per
-`docs/rules.md`.
+called out in the commit.

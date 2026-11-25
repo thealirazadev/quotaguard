@@ -2,8 +2,8 @@
 
 This is the test the whole design exists for, and it is mandatory after any change
 to app/lua/check.lua. It fires real concurrent commands at a real Redis; the same
-harness run against a check-then-consume implementation admits all 50 (see
-docs/memory.md), so a non-atomic regression cannot slip past it.
+harness run against a check-then-consume implementation admits all 50, so a
+non-atomic regression cannot slip past it.
 """
 
 import asyncio

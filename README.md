@@ -18,8 +18,8 @@ assumed.
 
 ## Features
 
-All four phases of `docs/phases.md` are implemented: plan and key management, the atomic check
-endpoint, the quota lifecycle (webhooks, rollups, usage), and per-plan Redis-down policies.
+Implemented: plan and key management, the atomic check endpoint, the quota lifecycle
+(webhooks, rollups, usage), and per-plan Redis-down policies.
 
 - `POST /v1/check`: allow/deny plus limit, remaining, and reset per
   draft-ietf-httpapi-ratelimit-headers-07, in one `EVALSHA` round trip.
@@ -174,19 +174,15 @@ would test the mock. CI runs lint and the full suite against a Redis 7 service c
 
 | Document | Contents |
 |----------|----------|
-| [docs/PRD.md](docs/PRD.md) | Problem, goals, non-goals, users, success criteria |
 | [docs/architecture.md](docs/architecture.md) | Stack, data model, the full Lua script spec, failure modes, invariants |
-| [docs/rules.md](docs/rules.md) | Project-specific engineering rules |
-| [docs/phases.md](docs/phases.md) | Build phases, expected commits, verification checklists |
 | [docs/design.md](docs/design.md) | CLI UX, API response, and log line design |
 | [docs/testing.md](docs/testing.md) | Test strategy, real-Redis CI setup, commands |
 | [docs/api-contracts.md](docs/api-contracts.md) | Every endpoint, CLI command, webhook, and the error format |
-| [docs/launch-checklist.md](docs/launch-checklist.md) | Pre-production checks and drills |
-| [docs/memory.md](docs/memory.md) | Working log and decisions |
+| [docs/decisions.md](docs/decisions.md) | Design decisions, the reasons behind them, and known edge cases |
 
 ## Status
 
-Phases 1 to 4 are complete and were verified end to end against a real Redis on 2026-11-09:
+All of the above is implemented and was verified end to end against a real Redis:
 
 - Quota lifecycle: crossing the soft threshold sent exactly one HMAC-signed webhook; `rollup
   run` is idempotent and skips while another run holds the lock; after `FLUSHDB` the next

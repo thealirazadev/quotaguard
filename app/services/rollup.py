@@ -283,7 +283,7 @@ def run() -> dict[str, int]:
             upsert_rollup(db, api_key.id, month, redis_value, quota_limit)
             stats["upserted"] += 1
 
-        # Phase 2: Restore from rollups (for counters that were lost).
+        # Then restore counters that Redis lost from their rollups.
         rollups = db.query(Rollup).all()
         for rollup in rollups:
             api_key = db.scalar(select(ApiKey).where(ApiKey.id == rollup.api_key_id))
@@ -292,7 +292,7 @@ def run() -> dict[str, int]:
             restored = restore_from_rollup(pool, api_key.key_id, rollup.month, rollup.used)
             stats["restored"] += restored
 
-        # Phase 3: Reconcile missed soft threshold webhooks.
+        # Finally, reconcile soft threshold webhooks that were never enqueued.
         stats["reconciled"] = reconcile_soft_webhooks(db, pool)
 
     except SQLAlchemyError as exc:
