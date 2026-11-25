@@ -78,7 +78,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     """Assigns or echoes X-Request-ID and logs each request at DEBUG.
 
     Access logging stays at DEBUG so the check hot path does not pay for a log
-    line per request (docs/rules.md).
+    line per request.
     """
 
     def __init__(self, app: object) -> None:

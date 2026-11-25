@@ -1,4 +1,4 @@
-"""Phase 4: per-plan Redis-down policy on the check path, and health reporting."""
+"""Per-plan Redis-down policy on the check path, and health reporting."""
 
 import logging
 

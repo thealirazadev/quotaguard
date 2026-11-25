@@ -103,7 +103,8 @@ pinned (`==`) in `pyproject.toml` at install time, `uv.lock` committed.
   CI provides one as a service container (see `docs/testing.md`).
 - **stdlib argparse** for the CLI - no CLI framework dependency.
 
-No other runtime dependencies. Anything beyond this list requires approval per `docs/rules.md`.
+No other runtime dependencies. Anything beyond this list needs a stated reason, because every
+dependency sits on the check hot path or its deployment.
 
 ## Data model (SQLite)
 

@@ -1,4 +1,4 @@
-"""Phase 3: rollups, restore after Redis loss, webhook reconciliation, and usage reports."""
+"""Rollups, restore after Redis loss, webhook reconciliation, and usage reports."""
 
 import json
 
