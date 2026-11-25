@@ -180,7 +180,7 @@ def _record_failure(db: Session, row: WebhookOutbox, error: str) -> None:
     row.next_attempt_at = compute_next_attempt(row.attempts)
     db.commit()
     if row.attempts >= get_settings().webhook_max_attempts:
-        logger.warning(
+        logger.error(
             "webhook.exhausted",
             extra={
                 "key_id": db.scalar(select(ApiKey.key_id).where(ApiKey.id == row.api_key_id)),
@@ -199,15 +199,23 @@ def deliver_webhooks() -> int:
 
     try:
         now = utcnow()
+        # Rows whose plan has no webhook_url stay in the outbox (the usage report reads the
+        # soft flag from them) but can never be sent and never move their next attempt, so
+        # they are filtered out here; left in, they would fill every batch and starve the
+        # deliverable rows behind them.
         due_rows = (
             session.query(WebhookOutbox)
+            .join(ApiKey, ApiKey.id == WebhookOutbox.api_key_id)
+            .join(Plan, Plan.id == ApiKey.plan_id)
             .filter(
                 and_(
                     WebhookOutbox.delivered_at.is_(None),
                     WebhookOutbox.next_attempt_at <= now,
                     WebhookOutbox.attempts < settings.webhook_max_attempts,
+                    Plan.webhook_url.is_not(None),
                 )
             )
+            .order_by(WebhookOutbox.next_attempt_at, WebhookOutbox.id)
             .limit(BATCH_SIZE)
             .all()
         )
