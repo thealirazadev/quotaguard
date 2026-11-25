@@ -49,8 +49,8 @@ class LayersOut(BaseModel):
 
 class CheckOut(BaseModel):
     """One decision. `reason` is null, burst, sustained, quota, unknown_key,
-    revoked_key, or redis_unavailable; the top-level limit/remaining/reset mirror
-    the layer carried by the RateLimit header."""
+    revoked_key, cost_exceeds_limit, or redis_unavailable; the top-level
+    limit/remaining/reset mirror the layer carried by the RateLimit header."""
 
     allowed: bool
     reason: str | None = None

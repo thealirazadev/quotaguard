@@ -59,10 +59,12 @@ key's traffic, while the monthly quota stays per key because that is the unit op
 about. The sustained `reset` is read after the consume, so an allowed check into an empty window
 reports the full window length rather than 0.
 
-Known edge case: a `cost` larger than the key's effective burst capacity can never be admitted, yet
-the bucket layer still reports a finite `retry_after`, so a client that honours `Retry-After` will
-retry indefinitely. A rule for impossible costs (reject at validation, or deny with no retry hint)
-is the open fix.
+A `cost` larger than the key's effective burst capacity (or its whole monthly quota) can never be
+admitted, yet the script used to report a finite `retry_after`, so a client honouring
+`Retry-After` retried forever. Such a check is now refused before Redis is touched, in band like an
+unknown key: `allowed: false`, `reason: "cost_exceeds_limit"`, no `Retry-After` and no `layers`.
+The gateway should answer it with a permanent 4xx such as 400, not 429. The bound is per key, not a
+request validation rule, because overrides change the capacity.
 
 ## 7. Draft-07 rate limit headers
 
@@ -101,8 +103,17 @@ Any `RedisError` on the check path applies the plan's `redis_down_policy`: `fail
 limiter outage should not take down the customer's API; plans guarding paid quotas opt into
 `fail_closed`. `/health` reports `redis: ok|down` and stays `200`, and admin routes keep working.
 A `NOSCRIPT` reply (script cache flushed) is answered with one reload and retry rather than treated
-as an outage. Known edge case: a socket timeout can expire after the script has already consumed,
-so the policy then applies to a request that was also charged.
+as an outage, which is safe because the script did not run.
+
+A socket timeout can expire after the script has already consumed, and nothing can tell from the
+client side whether it did. The chosen behaviour is to never retry the consume and accept that
+charge: the async client is built with zero retries (redis-py 6 and later retry timeouts by default
+on a directly constructed client), so one check is charged at most once and never twice. Under
+`fail_open` the request is admitted and was charged zero or one times; under `fail_closed` it is
+refused and may still have been charged, which errs toward under-admitting, the direction that
+policy exists for. A refund script was rejected: it would need a per-request receipt on the hot
+path and a second round trip to a Redis that just timed out. `tests/test_redis_down.py` runs a
+script that charges and then outlives the timeout, and asserts exactly one charge.
 
 ## 11. Monthly rollups that can only move forward
 

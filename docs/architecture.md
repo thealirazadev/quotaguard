@@ -16,6 +16,7 @@ cache misses, and background jobs (two asyncio loops: rollup and webhook deliver
 Gateway: POST /v1/check
      -> resolve key (in-process cache, TTL 5s; miss -> SQLite by sha256(api_key))
         unknown/revoked -> 200 allowed=false (reason unknown_key / revoked_key)
+        cost > burst capacity or monthly quota -> 200 allowed=false (cost_exceeds_limit)
      -> EVALSHA check.lua   (ONE round trip; Redis TIME is the only clock)
           |- token bucket   qg:b:{key_id}:{resource}   burst layer
           |- sliding window qg:s:{key_id}:{resource}   sustained layer
@@ -297,7 +298,7 @@ on a different revision can render its own headers.
 
 | Failure | Handling |
 |---|---|
-| Redis unreachable, timeout, or command error on a check | Per-plan `redis_down_policy`: `fail_open` -> `allowed: true, degraded: true`, header fields null; `fail_closed` -> `allowed: false`, reason `redis_unavailable`, `degraded: true`. Both answer 200 within `REDIS_TIMEOUT_MS` + connect timeout, log `check.redis_down` at WARNING with the policy taken, and consume nothing. `NOSCRIPT` after a Redis restart is not an outage: the registry reloads from `app/lua/` and retries the EVALSHA once; a second failure follows the policy. |
+| Redis unreachable, timeout, or command error on a check | Per-plan `redis_down_policy`: `fail_open` -> `allowed: true, degraded: true`, header fields null; `fail_closed` -> `allowed: false`, reason `redis_unavailable`, `degraded: true`. Both answer 200 within `REDIS_TIMEOUT_MS` + connect timeout and log `check.redis_down` at WARNING with the policy taken. A connect failure consumes nothing. A timeout or a connection dropped mid-reply is ambiguous: the script may already have consumed, and that charge stands. The client never retries the EVALSHA, so a check is charged at most once: under `fail_open` an admitted request may go uncharged or be charged once; under `fail_closed` a refused request may still be charged, which under-admits by that cost and never over-admits. `NOSCRIPT` after a Redis restart is not an outage (the script did not run): the registry reloads from `app/lua/` and retries the EVALSHA once; a second failure follows the policy. |
 | Redis data loss (restart without persistence, FLUSHALL) | Buckets and windows re-initialize full/empty: a bounded over-admission window equal to one burst + one sustained window, accepted and documented. Month counters restart at 0 but are restored by the next rollup run: `restore.lua` reads the current value and `INCRBY`s the shortfall to the persisted rollup value in one atomic script, so concurrent live increments are never lost and the counter is only ever raised. |
 | SQLite error on admin/usage/rollup | 500 `internal_error` (logged with detail); the check path is unaffected because resolved keys are cached. A cache-miss lookup that hits a database error also returns 500 - SQLite is a local file and no availability policy is built for it. |
 | Webhook endpoint down or non-2xx | Outbox row retried on the backoff schedule `min(30 * 2^(n-1), 3600)` seconds with jitter factor 0.8-1.2 up to `WEBHOOK_MAX_ATTEMPTS`; then `webhook.exhausted` is logged at ERROR and the row is kept undelivered for manual inspection. Delivery never blocks or slows the check path. |

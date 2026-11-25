@@ -103,6 +103,16 @@ def script_argv(key: ResolvedKey, cost: int, request_id: str) -> list[Any]:
     ]
 
 
+def cost_never_fits(key: ResolvedKey, cost: int) -> bool:
+    """True when no amount of waiting can admit this cost for this key.
+
+    The bucket never holds more than its capacity and a month never holds more than its
+    quota, so a larger cost would be denied forever while the script still reported a
+    finite retry_after. Such a check is refused up front instead.
+    """
+    return cost > key.burst_capacity or cost > key.monthly_quota
+
+
 def burst_window_seconds(key: ResolvedKey) -> int:
     """The bucket's policy window: how long a full drain takes to refill."""
     return math.ceil(key.burst_capacity / key.burst_refill_per_sec)

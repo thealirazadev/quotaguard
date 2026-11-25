@@ -99,8 +99,10 @@ curl -X POST localhost:8000/v1/check -H 'Content-Type: application/json' \
 
 The endpoint always answers `200` with a decision, including for an unknown or revoked key
 (`reason` is `unknown_key` or `revoked_key`, `layers` is `null`, and Redis is never touched). A
-gateway forwards the request when `allowed` is true and otherwise rejects it: `429` for `burst`,
-`sustained`, or `quota`, `401`/`403` for the key reasons. Copy `data.headers` onto the response
+`cost` larger than the key's burst capacity or monthly quota could never be admitted, so it is
+refused the same way with `reason: "cost_exceeds_limit"` and no `Retry-After`. A gateway forwards
+the request when `allowed` is true and otherwise rejects it: `429` for `burst`, `sustained`, or
+`quota`, `401`/`403` for the key reasons, and a non-retryable `400` for `cost_exceeds_limit`. Copy `data.headers` onto the response
 verbatim; `Retry-After` is present only on a deny. Malformed bodies, an out-of-charset resource,
 and a cost outside 1-1000 return `422` with the standard error envelope.
 

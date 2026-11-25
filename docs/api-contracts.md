@@ -120,7 +120,8 @@ Response `200` (denied - here by the sustained layer):
 
 (`layers` is always fully populated as in the allow example; elided above for brevity.)
 
-Response `200` (unknown or revoked key - no Redis touched, no `layers`):
+Response `200` (unknown or revoked key, or a `cost` above the key's burst capacity or monthly
+quota - no Redis touched, no `layers`):
 
 ```json
 {
@@ -152,7 +153,8 @@ Response `200` (Redis down, plan policy `fail_open`; `fail_closed` is identical 
 ```
 
 `reason` is one of: `null`, `"burst"`, `"sustained"`, `"quota"`, `"unknown_key"`,
-`"revoked_key"`, `"redis_unavailable"`.
+`"revoked_key"`, `"cost_exceeds_limit"`, `"redis_unavailable"`. `cost_exceeds_limit` is permanent
+for the key's current limits (waiting cannot help), so it carries no `Retry-After`.
 
 **Header contract** (draft-ietf-httpapi-ratelimit-headers-07): `RateLimit` carries the denying
 layer on deny, else the most constrained layer (smallest remaining/limit ratio, tie to the
@@ -362,6 +364,6 @@ and exits 0.
 
 Per incoming request: extract the consumer's api key, `POST /v1/check` with the resource name,
 then either forward the request (copying `data.headers` onto the eventual response) or reject it
-with HTTP 429 (`reason` burst/sustained/quota) or 401/403 (`unknown_key`/`revoked_key`), again
-copying the headers on 429. Treat `degraded: true` per your own risk posture; quotaguard has
+with HTTP 429 (`reason` burst/sustained/quota), 401/403 (`unknown_key`/`revoked_key`), or a
+non-retryable 400 (`cost_exceeds_limit`), again copying the headers on 429. Treat `degraded: true` per your own risk posture; quotaguard has
 already applied the plan's policy.
