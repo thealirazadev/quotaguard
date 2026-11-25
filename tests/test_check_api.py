@@ -160,3 +160,51 @@ async def test_malformed_json_is_rejected(client):
 async def test_resource_charset_accepts_the_documented_characters(script, do_check, issued):
     decision = await do_check(issued["api_key"], "v1/search_api.read:all-of-it")
     assert decision["allowed"] is True
+
+
+async def test_a_cost_above_the_burst_capacity_is_refused_without_a_retry_hint(
+    script, do_check, issued, redis_client
+):
+    decision = await do_check(issued["api_key"], cost=6)
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "cost_exceeds_limit"
+    assert decision["retry_after"] is None
+    assert decision["headers"] == {}
+    assert decision["layers"] is None
+    assert await redis_client.keys("qg:*") == []
+
+
+async def test_a_cost_equal_to_the_burst_capacity_is_admitted(script, do_check, issued):
+    decision = await do_check(issued["api_key"], cost=5)
+
+    assert decision["allowed"] is True
+    assert decision["layers"]["burst"]["remaining"] == 0
+
+
+async def test_a_cost_above_the_monthly_quota_is_refused(
+    script, do_check, make_plan, make_key, redis_client
+):
+    await make_plan(**{**SMALL_PLAN, "slug": "tiny", "burst_capacity": 50, "monthly_quota": 10})
+    key = await make_key(plan="tiny")
+
+    decision = await do_check(key["api_key"], cost=11)
+
+    assert (decision["allowed"], decision["reason"]) == (False, "cost_exceeds_limit")
+    assert "Retry-After" not in decision["headers"]
+    assert await redis_client.keys("qg:*") == []
+
+
+async def test_the_cost_limit_follows_the_key_override(script, client, do_check, issued):
+    assert (await do_check(issued["api_key"], cost=8))["reason"] == "cost_exceeds_limit"
+
+    response = await client.patch(
+        f"/admin/keys/{issued['key_id']}",
+        json={"override_burst_capacity": 10},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+
+    decision = await do_check(issued["api_key"], cost=8)
+    assert decision["allowed"] is True
+    assert decision["layers"]["burst"] == {"limit": 10, "remaining": 2, "reset": 8}

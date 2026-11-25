@@ -1,14 +1,28 @@
 """Per-plan Redis-down policy on the check path, and health reporting."""
 
+import asyncio
 import logging
+import time
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import NoScriptError
+from redis.exceptions import NoScriptError, ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app import redis_client
+from app.redis_client import build_client
 from app.services import checker
+from tests.conftest import TEST_REDIS_URL
+
+# Charges first, then spins long enough to outlive a 100 ms socket timeout: the shape of a
+# check script that consumed but whose reply arrived too late. The spin counts loop turns,
+# not TIME, because newer Redis freezes TIME for the length of a script.
+SLOW_CHARGE = """
+redis.call('INCR', KEYS[1])
+for _ = 1, tonumber(ARGV[1]) do end
+return 1
+"""
+SPIN = "for _ = 1, tonumber(ARGV[1]) do end return 1"
 
 PLAN = {
     "burst_capacity": 5,
@@ -64,12 +78,17 @@ async def test_fail_open_allows_with_a_degraded_decision(
     assert events.count("check.redis_down") == 1
 
 
+@pytest.mark.parametrize(
+    "error",
+    [RedisConnectionError("refused"), RedisTimeoutError("slow")],
+    ids=["connect", "timeout"],
+)
 async def test_fail_closed_refuses_with_redis_unavailable(
-    script, client, make_plan, make_key, do_check, redis_fails
+    script, client, make_plan, make_key, do_check, redis_fails, error
 ):
     await make_plan(slug="closed", redis_down_policy="fail_closed", **PLAN)
     key = await make_key(plan="closed")
-    redis_fails(RedisConnectionError("refused"))
+    redis_fails(error)
 
     decision = await do_check(key["api_key"])
 
@@ -101,3 +120,39 @@ async def test_health_reports_redis_down_without_failing(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "redis": "down"}
+
+
+async def test_a_timeout_after_the_script_ran_is_never_retried(redis_client):
+    """A retried consume would charge the same check twice; at most one charge is allowed."""
+    # Size the spin to about 400 ms on this Redis: past the 100 ms timeout, well under the
+    # 5 s point where Redis starts answering BUSY.
+    probe = 2_000_000
+    started = time.perf_counter()
+    await redis_client.eval(SPIN, 0, probe)
+    per_turn = max((time.perf_counter() - started) / probe, 1e-10)
+    turns = int(min(max(0.4 / per_turn, probe), 2_000_000_000))
+
+    client = build_client(TEST_REDIS_URL, timeout_seconds=0.1)
+    try:
+        with pytest.raises(RedisTimeoutError):
+            await client.eval(SLOW_CHARGE, 1, "qg:test:charges", turns)
+    finally:
+        await client.aclose()
+
+    await _wait_until_idle(redis_client)
+    await asyncio.sleep(0.5)  # long enough for a retried run, had there been one, to start
+    await _wait_until_idle(redis_client)
+    assert await redis_client.get("qg:test:charges") == "1"
+
+
+async def _wait_until_idle(redis_client, limit_seconds: float = 10.0) -> None:
+    """Wait for any running script to finish; Redis answers BUSY until it does."""
+    deadline = time.perf_counter() + limit_seconds
+    while True:
+        try:
+            await redis_client.ping()
+            return
+        except ResponseError as exc:
+            if "BUSY" not in str(exc) or time.perf_counter() > deadline:
+                raise
+            await asyncio.sleep(0.05)

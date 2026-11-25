@@ -16,11 +16,13 @@ from app.services import checker, keycache, webhooks
 
 logger = logging.getLogger("quotaguard.check")
 
+COST_EXCEEDS_LIMIT = "cost_exceeds_limit"
+
 router = APIRouter(prefix="/v1", tags=["check"], dependencies=[Depends(require_service_token)])
 
 
 def _refused(reason: str) -> CheckOut:
-    """Unknown or revoked key: no Redis is touched and there are no layers to report."""
+    """Unknown key, revoked key, or impossible cost: no Redis is touched, no layers."""
     return CheckOut(allowed=False, reason=reason)
 
 
@@ -44,6 +46,18 @@ async def check(payload: CheckRequest) -> dict:
             },
         )
         return {"data": _refused("revoked_key")}
+    if checker.cost_never_fits(key, payload.cost):
+        # Permanent for this key's limits, so there is no Retry-After to give.
+        logger.info(
+            "check refused",
+            extra={
+                "event": "check.denied",
+                "key_id": key.key_id,
+                "resource": payload.resource,
+                "deny_layer": COST_EXCEEDS_LIMIT,
+            },
+        )
+        return {"data": _refused(COST_EXCEEDS_LIMIT)}
 
     try:
         result = await checker.run_check(key, payload.resource, payload.cost)

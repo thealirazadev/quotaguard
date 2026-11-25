@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.models import WebhookOutbox, utcnow
-from app.schemas.plans import PlanCreateRequest
+from app.schemas.plans import PlanCreateRequest, PlanUpdateRequest
 from app.services import keys as keys_service
 from app.services import plans as plans_service
 from app.services import webhooks
@@ -112,7 +112,49 @@ def test_failures_back_off_and_exhaustion_is_logged_once(
 
     assert stored(db).attempts == 2
     assert stored(db).delivered_at is None
-    assert sum("webhook.exhausted" in r.getMessage() for r in caplog.records) == 1
+    exhausted = [r for r in caplog.records if "webhook.exhausted" in r.getMessage()]
+    assert [r.levelno for r in exhausted] == [logging.ERROR]
+
+
+def _plan_with_due_row(db, slug: str, url: str, due_ago: timedelta) -> None:
+    plans_service.create_plan(
+        db,
+        PlanCreateRequest(
+            slug=slug,
+            name=slug.title(),
+            burst_capacity=10,
+            burst_refill_per_sec=5,
+            sustained_limit=100,
+            sustained_window_seconds=60,
+            monthly_quota=10,
+            quota_soft_pct=80,
+            webhook_url=url,
+        ),
+    )
+    key, _ = keys_service.issue_key(db, slug, f"{slug} key")
+    db.add(
+        WebhookOutbox(
+            api_key_id=key.id,
+            month="2026-11",
+            kind="quota_soft",
+            payload='{"event": "quota.soft_threshold"}',
+            next_attempt_at=utcnow() - due_ago,
+        )
+    )
+    db.commit()
+
+
+def test_rows_without_a_webhook_url_do_not_starve_deliverable_rows(db, endpoint, monkeypatch):
+    # Enqueued first and due longest, then the operator turned the warning and receiver off.
+    _plan_with_due_row(db, "quiet", "http://hooks.test/quiet", timedelta(hours=1))
+    plans_service.update_plan(db, "quiet", PlanUpdateRequest(quota_soft_pct=0, webhook_url=None))
+    _plan_with_due_row(db, "loud", "http://hooks.test/loud", timedelta(seconds=1))
+    monkeypatch.setattr(webhooks, "BATCH_SIZE", 1)
+    received, _ = endpoint
+
+    assert webhooks.deliver_webhooks() == 1
+
+    assert [str(request.url) for request in received] == ["http://hooks.test/loud"]
 
 
 def test_backoff_doubles_and_caps_at_an_hour(monkeypatch):

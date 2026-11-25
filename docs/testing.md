@@ -26,16 +26,18 @@
   budget of 10 must admit exactly 10, repeated for each layer being the binding constraint. It
   runs in CI on every push and is mandatory after any change to `check.lua`.
 - **E2E-ish tests**: full check flow (HTTP -> cache -> EVALSHA -> headers) including cache-miss
-  resolution from SQLite; fail-open/fail-closed by pointing the Redis client at a closed port;
-  rollup CLI against seeded Redis + SQLite proving idempotency and restore.
+  resolution from SQLite; fail-open/fail-closed by making the script call raise each Redis error
+  class, plus a real script that charges and then outlives the client timeout to prove a check is
+  never charged twice; rollup CLI against seeded Redis + SQLite proving idempotency and restore.
 - **Manual QA** covers what automation cannot: `redis-cli monitor` single-round-trip checks,
   real webhook receivers, and stopping and restarting Redis under a running server.
 
 ### Test layout
 
-- `tests/conftest.py` - fixtures: `redis` (flushed test DB), `db` (tmp SQLite +
-  `alembic upgrade head`), `client` (ASGITransport, overridden settings), `make_plan`/`make_key`
-  factories, `check()` helper posting a valid check.
+- `tests/conftest.py` - fixtures: `redis_client` (flushed test DB), `script` (the app's own
+  script registry and pool), `db` (a session on the tmp SQLite migrated once per run with
+  `alembic upgrade head`), `client` (ASGITransport), `make_plan`/`make_key` factories, and
+  `do_check()` posting a valid check.
 - `tests/test_admin_plans.py`, `tests/test_admin_keys.py`, `tests/test_auth.py`,
   `tests/test_cli.py` - admin API, auth, and CLI.
 - `tests/test_lua_check.py` - script behavior against Redis (per-layer, TTLs, deny purity).
